@@ -24,7 +24,14 @@ class MatcherTest {
         variants: LongArray = longArrayOf(far(), far(), far(), far()),
         crop: Long = far(),
         flat: Boolean = false,
-    ) = ImageFeatures(phash, variants, crop, flat, cb, cr, sat, sharp, detail, median, 0f, 0f)
+        fine: LongArray = LongArray(4),
+        cropFine: LongArray = LongArray(4),
+        mean: Float = 120f,
+        contrast: Float = 50f,
+    ) = ImageFeatures(phash, variants, crop, fine, cropFine, flat, cb, cr, sat, mean, contrast, sharp, detail, median, 0f, 0f)
+
+    /** Fine bits that differ from all-zero in [bits] places (never the first, the unused one). */
+    private fun fineBits(bits: Int) = LongArray(4).also { for (b in 1..bits) it[b ushr 6] = it[b ushr 6] or (1L shl (b and 63)) }
 
     private fun photo(
         path: String,
@@ -37,10 +44,10 @@ class MatcherTest {
         camera: String? = null,
         favorite: Boolean = false,
         added: Long = 0,
-    ) = Item(MediaKind.PHOTO, path, size, added, favorite, CopyNames.isOriginalFolder(path), sha, w, h, taken, camera, f)
+    ) = Item(MediaKind.PHOTO, path, size, added, favorite, CopyNames.isOriginalFolder(path), CopyNames.isRaw(path), sha, w, h, taken, camera, f)
 
     private fun video(path: String, sha: String, size: Long = 50_000_000, added: Long = 0) =
-        Item(MediaKind.VIDEO, path, size, added, false, CopyNames.isOriginalFolder(path), sha, 1920, 1080, null, null, null)
+        Item(MediaKind.VIDEO, path, size, added, false, CopyNames.isOriginalFolder(path), false, sha, 1920, 1080, null, null, null)
 
     private fun flip(h: Long, bits: Int) = h xor ((1L shl bits) - 1)
 
@@ -98,7 +105,7 @@ class MatcherTest {
         assertEquals(1, g.keeper)
         val m = g.members.first { !it.keeper }
         assertEquals(Relation.LOOKALIKE, m.relation)
-        assertEquals(95.3125f, m.score!!, 0.001f)
+        assertEquals(100f, m.score!!, 0.001f)
         assertTrue(m.suggestTrash)
     }
 
@@ -119,9 +126,155 @@ class MatcherTest {
             photo("b.jpg", feat(h, cb = 140f, cr = 110f, sat = 30f)),
         )
         assertTrue(match(items).isEmpty())
-        // but a black-and-white copy matches its colour original
+        // but a black-and-white copy matches its colour original: shown, and left for you to decide
         val bw = listOf(photo("a.jpg", feat(h, cb = 100f, cr = 140f, sat = 30f)), photo("b.jpg", feat(h, sat = 1f)))
-        assertEquals(1, match(bw).size)
+        val m = match(bw).single().members.first { !it.keeper }
+        assertTrue(m.edited)
+        assertFalse(m.suggestTrash)
+    }
+
+    @Test fun anEditedCopyIsShownButNeverPreselected() {
+        val h = far()
+        fun pair(f: ImageFeatures) = match(listOf(photo("DCIM/Camera/a.jpg", feat(h), size = 4_000_000), photo("Pictures/b.jpg", f, size = 3_000_000)))
+            .single().members.first { !it.keeper }
+        assertTrue(pair(feat(h)).suggestTrash)                                   // a plain re-save
+        assertTrue(pair(feat(h, mean = 123f, contrast = 52f)).suggestTrash)      // as much as resizing changes
+        for (edit in listOf(feat(h, mean = 135f), feat(h, contrast = 62f), feat(h, cb = 132f, cr = 125f, sat = 9f), feat(h, sat = 5f))) {
+            val m = pair(edit)
+            assertEquals(Relation.LOOKALIKE, m.relation)
+            assertTrue(m.edited)
+            assertFalse(m.suggestTrash)
+            assertTrue(m.note!!.contains("edit"))
+        }
+    }
+
+    @Test fun theDetailsMustMatchToo() {
+        val h = far()
+        fun groups(fineApart: Int, bitsApart: Int = 2, o: MatchOptions = MatchOptions(poor = false)) =
+            match(listOf(photo("DCIM/Camera/a.jpg", feat(h), size = 4_000_000), photo("Pictures/b.jpg", feat(flip(h, bitsApart), fine = fineBits(fineApart)), size = 3_000_000)), o)
+        // the same layout, other details (another page of text): not a look-alike at all
+        assertTrue(groups(80).isEmpty())
+        assertTrue(groups(49).isEmpty())
+        // alike, but not surely the same picture: shown, never pre-selected
+        val maybe = groups(40).single().members.first { !it.keeper }
+        assertEquals(Relation.LOOKALIKE, maybe.relation)
+        assertFalse(maybe.suggestTrash)
+        assertTrue(maybe.note!!.contains("details"))
+        assertEquals(100f * (255 - 40) / 255, maybe.score!!, 0.01f)
+        // surely the same
+        assertTrue(groups(32).single().members.first { !it.keeper }.suggestTrash)
+        // strict wants nearly every detail to match
+        assertTrue(groups(20, o = MatchOptions(maxBits = 4, poor = false)).isEmpty())
+        assertTrue(groups(16, o = MatchOptions(maxBits = 4, poor = false)).single().members.first { !it.keeper }.suggestTrash)
+    }
+
+    @Test fun looseFindsMoreButTicksNoMore() {
+        val h = far()
+        val items = listOf(photo("DCIM/Camera/a.jpg", feat(h), size = 4_000_000), photo("Pictures/b.jpg", feat(flip(h, 10)), size = 3_000_000))
+        assertTrue(match(items).isEmpty())
+        val m = match(items, MatchOptions(maxBits = 12, poor = false)).single().members.first { !it.keeper }
+        assertEquals(Relation.LOOKALIKE, m.relation)
+        assertFalse(m.suggestTrash)
+    }
+
+    @Test fun aRawFileAndItsJpegAreNeverPreselected() {
+        val h = far()
+        val items = listOf(
+            photo("DCIM/Camera/IMG_7.dng", feat(h), size = 25_000_000),
+            photo("DCIM/Camera/IMG_7.jpg", feat(h), size = 4_000_000),
+            photo("Download/IMG_7.jpg", feat(h), size = 4_000_000, w = 2000, h = 1500),
+        )
+        val g = match(items).single()
+        assertEquals(0, g.keeper)
+        assertTrue(g.members.none { it.suggestTrash })
+        assertTrue(g.members.filter { !it.keeper }.all { it.note!!.contains("RAW") })
+        // without the RAW file, the smaller copy goes as usual
+        assertTrue(match(items.drop(1)).single().members.first { !it.keeper }.suggestTrash)
+    }
+
+    @Test fun aBurstFrameFarFromTheKeptShotIsNotPreselected() {
+        val h = far()
+        // a slow pan: each frame like its neighbour, the last one unlike the first
+        val fine = listOf(fineBits(0), fineBits(40), fineBits(80))
+        val detail = listOf(120f, 100f, 90f)
+        val items = fine.indices.map {
+            photo("DCIM/Camera/P_$it.jpg", feat(h, detail = detail[it], fine = fine[it]), taken = 500.0 + it, camera = "Pixel 9")
+        }
+        val g = match(items).single()
+        assertEquals(GroupType.BURST, g.type)
+        assertEquals(0, g.keeper)
+        assertTrue(g.members[1].suggestTrash)
+        assertFalse(g.members[2].suggestTrash)
+        assertEquals(Relation.BURST, g.members[2].relation)
+        assertTrue(g.members[2].note!!.contains("moment"))
+        assertTrue(g.members.all { it.frame })
+        // frames whose details differ too much aren't one burst at all
+        val apart = listOf(
+            photo("DCIM/Camera/a.jpg", feat(h), taken = 1.0, camera = "X"),
+            photo("DCIM/Camera/b.jpg", feat(h xor 0x3FFL, fine = fineBits(70)), taken = 2.0, camera = "X"),
+        )
+        assertTrue(match(apart).isEmpty())
+    }
+
+    @Test fun differentPagesAndScreensAreNeverGrouped() {
+        // What a 64-bit pHash alone gets wrong: it only sees a picture's layout.
+        val pics = (0 until 60).map { Scenes.page(it) } + (0 until 40).map { Scenes.screen(it) }
+        val f = pics.map { it.features() }
+        var confusable = 0
+        for (i in f.indices) for (j in i + 1 until f.size) if (ImageAnalysis.hamming(f[i].phash, f[j].phash) <= 8) confusable++
+        assertTrue("the test needs pairs a pHash confuses, found $confusable", confusable >= 5)
+        val items = f.mapIndexed { i, fe -> photo("Pictures/Screenshots/s$i.png", fe, size = 300_000L + i, w = pics[i].w, h = pics[i].h) }
+        assertTrue(match(items).isEmpty())
+        assertTrue(match(items, MatchOptions(maxBits = 12, poor = false)).isEmpty())
+    }
+
+    @Test fun pagesPhotographedOneAfterTheOtherAreNotABurst() {
+        val f = (0 until 40).map { Scenes.page(100 + it).features() }
+        var close = 0
+        for (i in 0 until f.size - 1) if (ImageAnalysis.hamming(f[i].phash, f[i + 1].phash) <= MatchOptions.BURST_BITS) close++
+        assertTrue("the test needs neighbours a pHash takes for burst frames, found $close", close >= 5)
+        val items = f.mapIndexed { i, fe -> photo("DCIM/Camera/IMG_$i.jpg", fe, taken = 1000.0 + 2 * i, camera = "Pixel 9", w = 3000, h = 4000) }
+        assertTrue(match(items).isEmpty())
+    }
+
+    @Test fun aHandHeldBurstOfAPageIsFound() {
+        val base = Scenes.page(7)
+        val frames = (0 until 5).map { Scenes.noise(Scenes.shift(base, it * 3), 2.0, it) }      // 0.4 % of the width a frame
+        val items = frames.mapIndexed { i, p -> photo("DCIM/Camera/B_$i.jpg", p.features(), taken = 50.0 + 0.3 * i, camera = "Pixel 9", w = 3000, h = 4000) }
+        val g = match(items).single()
+        assertEquals(GroupType.BURST, g.type)
+        assertEquals(5, g.burstShots)
+        assertEquals(4, g.members.count { it.suggestTrash })
+    }
+
+    @Test fun editsOfRealPicturesAreToldFromResaves() {
+        val base = Scenes.scene(31, 800, 600)
+        fun other(p: Pic) = match(
+            listOf(photo("DCIM/Camera/a.jpg", base.features(), size = 4_000_000, w = 800, h = 600), photo("Pictures/b.jpg", p.features(), size = 1_000_000, w = p.w, h = p.h)),
+        ).single().members.first { !it.keeper }
+        assertTrue(other(Scenes.resize(base, 400, 300)).suggestTrash)
+        assertTrue(other(Scenes.noise(Scenes.resize(base, 400, 300), 4.0, 1)).suggestTrash)
+        for (edit in listOf(Scenes.scale(base, 1.15), Scenes.contrast(base, 0.8), Scenes.grey(base), Scenes.tint(base, 12, 0, -12))) {
+            val m = other(edit)
+            assertTrue(m.edited)
+            assertFalse(m.suggestTrash)
+        }
+    }
+
+    @Test fun comparingCanBeStoppedAndTellsHowFarItIs() {
+        val r = Random(3)
+        val items = (0 until 600).map { photo("Pictures/p$it.jpg", feat(r.nextLong())) }
+        for (threads in listOf(1, 4)) {
+            var last = 0 to 0
+            match(items, MatchOptions(poor = false, threads = threads, progress = { d, t -> synchronized(this) { if (d > last.first) last = d to t } }))
+            assertTrue(last.first > 1)
+            assertEquals(last.second, last.first)
+            try {
+                match(items, MatchOptions(poor = false, threads = threads, cancelled = { true }))
+                org.junit.Assert.fail("not stopped")
+            } catch (_: java.util.concurrent.CancellationException) {
+            }
+        }
     }
 
     @Test fun turnedCopiesArePreselectedMirroredAndCroppedAreNot() {
@@ -129,12 +282,14 @@ class MatcherTest {
         val rot = far()
         val mir = far()
         val crop = far()
-        val orig = feat(h, variants = longArrayOf(rot, far(), far(), mir), crop = crop)
+        val fine = longArrayOf(far() and 1L.inv(), far(), far(), far())
+        val cropFine = longArrayOf(far(), far(), far(), far())
+        val orig = feat(h, variants = longArrayOf(rot, far(), far(), mir), crop = crop, fine = fine, cropFine = cropFine)
         val items = listOf(
             photo("DCIM/Camera/orig.jpg", orig, size = 5_000_000),
-            photo("Download/turned.jpg", feat(rot), size = 1_000_000, w = 3000, h = 4000),
-            photo("Download/mirrored.jpg", feat(mir), size = 1_000_000, w = 2000),
-            photo("Download/cropped.jpg", feat(crop), size = 1_000_000, w = 3000),
+            photo("Download/turned.jpg", feat(rot, fine = ImageAnalysis.fineVariant(fine, 0)), size = 1_000_000, w = 3000, h = 4000),
+            photo("Download/mirrored.jpg", feat(mir, fine = ImageAnalysis.fineVariant(fine, 3)), size = 1_000_000, w = 2000),
+            photo("Download/cropped.jpg", feat(crop, fine = cropFine), size = 1_000_000, w = 3000),
         )
         val g = match(items).single()
         assertEquals(0, g.keeper)
@@ -168,8 +323,9 @@ class MatcherTest {
 
     @Test fun burstKeepsTheSharpestFrame() {
         val h = far()
-        // neighbouring frames 10 bits apart: too far for a look-alike, close enough for a burst
-        val hashes = listOf(h, h xor 0x3FFL, h xor 0x3FFL xor (0x3FFL shl 12), h xor (0x3FFL shl 12))
+        // neighbouring frames 6 to 10 bits apart: too far for a look-alike, close enough for a burst,
+        // and none more than 16 bits from the frame that is kept
+        val hashes = listOf(h, h xor 0x3FFL, h xor 0x3FFL xor (0x3FL shl 12), h xor (0x3FL shl 12))
         val detail = listOf(50f, 120f, 80f, 60f)
         val items = hashes.indices.map {
             photo("DCIM/Camera/B_$it.jpg", feat(hashes[it], detail = detail[it]), taken = 1000.0 + it, camera = "Pixel 9")
@@ -214,10 +370,13 @@ class MatcherTest {
 
     @Test fun poorShotsAreListedButNeverPreselected() {
         val items = listOf(
-            photo("DCIM/Camera/blurry.jpg", feat(far(), sharp = 20f)),
-            photo("DCIM/Camera/dark.jpg", feat(far(), median = 15f)),
-            photo("DCIM/Camera/fine.jpg", feat(far())),
-            photo("DCIM/Camera/tiny.png", feat(far(), sharp = Float.NaN)),
+            photo("DCIM/Camera/blurry.jpg", feat(far(), sharp = 20f), camera = "Pixel 9"),
+            photo("DCIM/Camera/dark.jpg", feat(far(), median = 15f), taken = 77.0),
+            photo("DCIM/Camera/fine.jpg", feat(far()), camera = "Pixel 9"),
+            photo("DCIM/Camera/tiny.png", feat(far(), sharp = Float.NaN), camera = "Pixel 9"),
+            // not from a camera: a dark-theme screenshot and a soft drawing are not poor shots
+            photo("Pictures/Screenshots/dark-mode.png", feat(far(), median = 15f)),
+            photo("Download/drawing.png", feat(far(), sharp = 20f)),
         )
         val g = match(items, MatchOptions()).single()
         assertEquals(GroupType.POOR, g.type)

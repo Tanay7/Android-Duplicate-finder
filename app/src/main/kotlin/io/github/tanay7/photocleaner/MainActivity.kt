@@ -19,6 +19,7 @@ import android.widget.Toast
 import android.window.OnBackInvokedCallback
 import android.window.OnBackInvokedDispatcher
 import io.github.tanay7.photocleaner.Prefs.askedNotifications
+import io.github.tanay7.photocleaner.Prefs.askedOriginals
 import io.github.tanay7.photocleaner.scan.ScanRequest
 import io.github.tanay7.photocleaner.scan.ScanService
 import io.github.tanay7.photocleaner.scan.ScanState
@@ -42,6 +43,7 @@ class MainActivity : Activity() {
     private var backRegistered = false
     private var trashDone: ((Boolean) -> Unit)? = null
     private var permissionDone: (() -> Unit)? = null
+    private var scanAfterAsking: (() -> Unit)? = null
 
     /** Files were moved to or from the trash since the folder list was read. */
     var mediaChanged = false
@@ -79,9 +81,10 @@ class MainActivity : Activity() {
     private fun restore() {
         val last = Prefs.lastScan(this) ?: return
         val access = access()
-        if (access == Access.NONE || ScanState.running) return
-        ScanService.start(this, ScanRequest(last.first, last.second, access == Access.FULL, verbose = false, restoring = true))
-        push(ScanScreen(this))
+        if (access == Access.NONE || ScanState.busy) return
+        if (ScanService.start(this, ScanRequest(last.first, last.second, access == Access.FULL, verbose = false, restoring = true))) {
+            push(ScanScreen(this))
+        }
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -121,8 +124,14 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        // The screens let go of what would outlive them: listeners, observers, pictures.
+        top?.onHidden()
         stack.forEach { it.onDestroy() }
         stack.clear()
+        if (backRegistered) {
+            onBackInvokedDispatcher.unregisterOnBackInvokedCallback(backCallback)
+            backRegistered = false
+        }
         super.onDestroy()
     }
 
@@ -213,8 +222,13 @@ class MainActivity : Activity() {
     fun requestMedia(done: () -> Unit) {
         permissionDone = done
         getSharedPreferences("settings", MODE_PRIVATE).edit().putBoolean("askedMedia", true).apply()
+        // ACCESS_MEDIA_LOCATION belongs to the same question (it adds no second one): with it Android
+        // hands out the files' own bytes, not copies with the place a photo was taken blanked out.
         requestPermissions(
-            arrayOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VIDEO, Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED),
+            arrayOf(
+                Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VIDEO,
+                Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED, Manifest.permission.ACCESS_MEDIA_LOCATION,
+            ),
             REQ_MEDIA,
         )
     }
@@ -233,11 +247,23 @@ class MainActivity : Activity() {
         }
     }
 
-    /** Notifications show a scan's progress while the app is closed. Asked once, at the first scan. */
-    fun askNotificationsOnce() {
-        if (askedNotifications) return
+    /**
+     * What is asked once, before the first scan, and then starts it: notifications (they show a
+     * scan's progress while the app is closed) and, on an install that was granted photos before the
+     * app asked for it, the photos' own bytes. The scan starts whatever the answers are.
+     */
+    fun beforeScan(scan: () -> Unit) {
+        val ask = ArrayList<String>()
+        if (!askedOriginals && !granted(Manifest.permission.ACCESS_MEDIA_LOCATION)) ask.add(Manifest.permission.ACCESS_MEDIA_LOCATION)
+        if (!askedNotifications && !granted(Manifest.permission.POST_NOTIFICATIONS)) ask.add(Manifest.permission.POST_NOTIFICATIONS)
+        askedOriginals = true
         askedNotifications = true
-        if (!granted(Manifest.permission.POST_NOTIFICATIONS)) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQ_NOTIFY)
+        if (ask.isEmpty()) {
+            scan()
+            return
+        }
+        scanAfterAsking = scan
+        requestPermissions(ask.toTypedArray(), REQ_BEFORE_SCAN)
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
@@ -245,6 +271,10 @@ class MainActivity : Activity() {
         if (requestCode == REQ_MEDIA) {
             val d = permissionDone
             permissionDone = null
+            d?.invoke()
+        } else if (requestCode == REQ_BEFORE_SCAN) {
+            val d = scanAfterAsking
+            scanAfterAsking = null
             d?.invoke()
         }
     }
@@ -301,9 +331,12 @@ class MainActivity : Activity() {
     // -- test hooks ------------------------------------------------------------------------------
 
     /**
-     * Extras the on-device test uses (harmless for anyone else: scanning only reads):
-     *  - `folders`: comma-separated folders to select, such as "DCIM/Camera,Download", or "*" for all;
+     * Extras the on-device test uses:
+     *  - `folders`: comma-separated folders to tick, such as "DCIM/Camera,Download", or "*" for all;
      *  - `autoscan`: start a scan straight away, logging every group.
+     *
+     * Any app can start this screen, so they are honoured only on a phone with USB debugging on (a
+     * developer's), do nothing but tick folders and read, and never change the saved folder choice.
      */
     private fun handleIntent(i: Intent?) {
         if (i == null) return
@@ -312,14 +345,19 @@ class MainActivity : Activity() {
         if (folders == null && !autoscan) return
         i.removeExtra(EXTRA_FOLDERS)
         i.removeExtra(EXTRA_AUTOSCAN)
-        if (ScanState.running) return
+        val debugging = try {
+            Settings.Global.getInt(contentResolver, Settings.Global.ADB_ENABLED, 0) != 0
+        } catch (_: Exception) {
+            false
+        }
+        if (!debugging || ScanState.busy) return
         popToRoot()
         (stack[0] as FoldersScreen).testRequest(folders, autoscan)
     }
 
     companion object {
         private const val REQ_MEDIA = 1
-        private const val REQ_NOTIFY = 2
+        private const val REQ_BEFORE_SCAN = 2
         private const val REQ_TRASH = 3
         private const val STATE_RESULTS = "results"
         private const val STATE_SCANNING = "scanning"

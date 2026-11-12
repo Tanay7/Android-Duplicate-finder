@@ -28,13 +28,13 @@ import io.github.tanay7.photocleaner.core.FolderInfo
 import io.github.tanay7.photocleaner.core.FolderNode
 import io.github.tanay7.photocleaner.core.FolderSelection
 import io.github.tanay7.photocleaner.core.FolderTree
+import io.github.tanay7.photocleaner.core.Journal
 import io.github.tanay7.photocleaner.core.Fmt
 import io.github.tanay7.photocleaner.media.MediaIndex
 import io.github.tanay7.photocleaner.scan.ScanOptions
 import io.github.tanay7.photocleaner.scan.ScanRequest
 import io.github.tanay7.photocleaner.scan.ScanService
 import io.github.tanay7.photocleaner.scan.ScanState
-import kotlin.concurrent.thread
 
 /**
  * The start screen: every folder on the phone that holds photos or videos, as a tree with tick
@@ -78,6 +78,13 @@ class FoldersScreen(act: MainActivity) : Screen(act) {
         addView(resultsText.lp(t = ui.dp(4)))
         addView(ui.button("View results", Ui.Style.TONAL) { openResults() }.lp(WRAP, WRAP, t = ui.dp(12)))
     }
+    private val interruptedCard = ui.card(c.surfaceHigh).apply {
+        addView(ui.text("The last scan stopped before it was done", 16f, c.onSurface, 500))
+        addView(ui.text("Scan again: it carries on from where it was. A photo that stops the app twice is left out from then on.",
+            14f, c.onSurfaceVariant).lp(t = ui.dp(4)))
+        visibility = View.GONE
+    }
+    private var interrupted = false
     private val countText = ui.text("", 13f, c.onSurfaceVariant)
     private val sectionHead = ui.vbox(
         ui.hbox(
@@ -99,6 +106,7 @@ class FoldersScreen(act: MainActivity) : Screen(act) {
     private val header = ui.vbox(
         accessCard.lp(l = ui.dp(16), t = ui.dp(4), r = ui.dp(16), b = ui.dp(8)),
         resultsCard.lp(l = ui.dp(16), t = ui.dp(4), r = ui.dp(16), b = ui.dp(8)),
+        interruptedCard.lp(l = ui.dp(16), t = ui.dp(4), r = ui.dp(16), b = ui.dp(8)),
         sectionHead,
         spinner.lp(WRAP, WRAP, gravity = Gravity.CENTER_HORIZONTAL, t = ui.dp(8), b = ui.dp(8)),
         emptyText,
@@ -144,25 +152,37 @@ class FoldersScreen(act: MainActivity) : Screen(act) {
     }
     private var observing = false
 
+    private var showing = false
+
     override fun onShown() {
+        showing = true
         bottom.layout()
         refresh()
         load(force = act.mediaChanged)
         act.mediaChanged = false
-        if (!observing && act.access() != MainActivity.Access.NONE) {
-            try {
-                // Every volume (phone, SD cards) notifies under the media authority.
-                ctx.contentResolver.registerContentObserver(MediaStore.AUTHORITY_URI, true, observer)
-                observing = true
-            } catch (_: Exception) {
-                // no live updates: the list still reloads every time the screen comes back
-            }
+        observe()
+    }
+
+    private fun observe() {
+        if (observing || !showing || act.access() == MainActivity.Access.NONE) return
+        try {
+            // Every volume (phone, SD cards) notifies under the media authority.
+            ctx.contentResolver.registerContentObserver(MediaStore.AUTHORITY_URI, true, observer)
+            observing = true
+        } catch (_: Exception) {
+            // no live updates: the list still reloads every time the screen comes back
         }
     }
 
-    override fun onHidden() = stopObserving()
+    override fun onHidden() {
+        showing = false
+        stopObserving()
+    }
 
-    override fun onResumed() = load(force = false)
+    override fun onResumed() {
+        observe()
+        load(force = false)
+    }
 
     override fun onDestroy() {
         destroyed = true
@@ -195,23 +215,36 @@ class FoldersScreen(act: MainActivity) : Screen(act) {
         loading = true
         refresh()
         val appCtx = ctx.applicationContext
-        thread(name = "folders") {
-            // Nothing thrown here may escape: an uncaught error on any thread ends the app.
-            val (found, tree) = try {
-                val f = MediaIndex.folders(MediaIndex.query(appCtx))
-                val labels = try {
-                    MediaIndex.volumeLabels(appCtx)
-                } catch (_: Exception) {
-                    emptyMap()
-                }
-                f to FolderTree.build(f) { labels[it] ?: if (it == "external_primary") "Phone" else "SD card" }
-            } catch (t: Throwable) {
-                android.util.Log.w("PhotoCleaner", "Couldn't list the folders", t)
-                emptyList<FolderInfo>() to emptyList()
+        // If the list can't be read, the one on screen stays: an empty list would look like an empty phone.
+        Bg.start("folders", { loading = false; unreadable = true; if (!destroyed) refresh() }) {
+            val f = MediaIndex.folders(appCtx)
+            val labels = try {
+                MediaIndex.volumeLabels(appCtx)
+            } catch (_: Exception) {
+                emptyMap()
             }
-            main.post { if (!destroyed) loaded(found, tree) }
+            val volumes = MediaIndex.volumes(appCtx)
+            val tree = FolderTree.build(f) { labels[it] ?: if (it == "external_primary") "Phone" else "SD card" }
+            // Files still noted as being read: the last scan didn't end in order (the app was closed or died).
+            val left = !Journal.read(java.io.File(appCtx.filesDir, "in-flight")).isEmpty
+            main.post {
+                if (!destroyed) {
+                    mounted = volumes
+                    unreadable = false
+                    interrupted = left
+                    loaded(f, tree)
+                }
+            }
         }
     }
+
+    /** The last try to read the folders failed (the list on screen, if any, is from before). */
+    private var unreadable = false
+
+    /** The storage volumes in the phone at the last reading: a folder on another one is on a card that is out. */
+    private var mounted: Set<String> = setOf("external_primary")
+
+    private fun away(key: String) = key.substringBefore(':') !in mounted
 
     private fun loaded(found: List<FolderInfo>, tree: List<FolderNode>) {
         val first = loadedAt == 0L
@@ -223,7 +256,10 @@ class FoldersScreen(act: MainActivity) : Screen(act) {
         val keys = found.map { it.key }
         val known = Prefs.knownFolders(ctx)
         if (first) {
-            selection = FolderSelection(FolderTree.initialSelection(keys, Prefs.selection(ctx), known, Prefs.allSelected(ctx)))
+            val saved = Prefs.selection(ctx)
+            selection = FolderSelection(FolderTree.initialSelection(keys, saved, known, Prefs.allSelected(ctx)))
+            // Ticks for folders on an SD card that is out are kept for when it is back.
+            saved?.filterTo(selection.selected) { away(it) }
             roots.forEach { expanded.add(it.key) }
         } else if (Prefs.allSelected(ctx)) {
             // A folder that appeared while the app was open follows the same rule as at start.
@@ -238,7 +274,9 @@ class FoldersScreen(act: MainActivity) : Screen(act) {
     }
 
     private fun save() {
-        Prefs.saveSelection(ctx, selection.selected.intersect(folders.map { it.key }.toSet()), folders.mapTo(HashSet()) { it.key })
+        val here = folders.mapTo(HashSet()) { it.key }
+        val knownAway = (Prefs.knownFolders(ctx) ?: emptySet()).filter { away(it) }
+        Prefs.saveSelection(ctx, selection.selected.filterTo(HashSet()) { it in here || away(it) }, here + knownAway)
     }
 
     // -- view ------------------------------------------------------------------------------------
@@ -268,10 +306,13 @@ class FoldersScreen(act: MainActivity) : Screen(act) {
             resultsText.text = if (groups == 0) "Nothing left to clean in ${Fmt.plural(result.folders, "folder", "folders")}."
             else "${Fmt.plural(groups, "group", "groups")} to review · ${Fmt.plural(dupes, "duplicate", "duplicates")} suggested"
         }
+        interruptedCard.visibility = if (interrupted && result == null && !ScanState.busy && access != MainActivity.Access.NONE) View.VISIBLE else View.GONE
         sectionHead.visibility = if (access == MainActivity.Access.NONE) View.GONE else View.VISIBLE
         spinner.visibility = if (loading && roots.isEmpty()) View.VISIBLE else View.GONE
-        emptyText.visibility = if (!loading && access != MainActivity.Access.NONE && roots.isEmpty() && loadedAt > 0) View.VISIBLE else View.GONE
-        emptyText.text = "No photos or videos found on this phone."
+        emptyText.visibility =
+            if (!loading && access != MainActivity.Access.NONE && roots.isEmpty() && (loadedAt > 0 || unreadable)) View.VISIBLE else View.GONE
+        emptyText.text = if (unreadable) "Couldn't read the folders. Leave this screen and come back to try again."
+        else "No photos or videos found on this phone."
 
         rows = FolderTree.visible(roots, expanded)
         adapter.notifyDataSetChanged()
@@ -292,7 +333,7 @@ class FoldersScreen(act: MainActivity) : Screen(act) {
             ).joinToString(" · ") + "\n" + lookingFor(o)
         }
         scanButton.text = if (chosen.isEmpty()) "Scan" else "Scan ${Fmt.plural(chosen.size, "folder", "folders")}"
-        ui.enable(scanButton, access != MainActivity.Access.NONE && chosen.isNotEmpty() && (photos + videos) > 0 && !ScanState.running)
+        ui.enable(scanButton, access != MainActivity.Access.NONE && chosen.isNotEmpty() && (photos + videos) > 0 && !ScanState.busy)
     }
 
     private fun lookingFor(o: ScanOptions): String {
@@ -386,17 +427,26 @@ class FoldersScreen(act: MainActivity) : Screen(act) {
     // -- actions ---------------------------------------------------------------------------------
 
     private fun onAccessButton() {
-        if (act.mediaBlocked()) act.openAppSettings() else act.requestMedia { load(force = true); refresh() }
+        if (act.mediaBlocked()) act.openAppSettings() else act.requestMedia {
+            observe()
+            load(force = true)
+            refresh()
+        }
     }
 
-    private fun startScan() {
+    /** Starts a scan of the ticked folders. [remember] saves the ticks as the folder choice (not for the test hook). */
+    private fun startScan(remember: Boolean = true) {
         val keys = selection.selected.intersect(folders.map { it.key }.toSet())
-        if (keys.isEmpty() || ScanState.running) return
-        save()
-        act.askNotificationsOnce()
-        ScanService.start(ctx, ScanRequest(keys, Prefs.options(ctx), act.access() == MainActivity.Access.FULL, verboseNext))
+        if (keys.isEmpty() || ScanState.busy) return
+        if (remember) save()
+        val verbose = verboseNext
         verboseNext = false
-        act.push(ScanScreen(act))
+        act.beforeScan {
+            if (destroyed || act.top !== this) return@beforeScan
+            if (ScanService.start(ctx, ScanRequest(keys, Prefs.options(ctx), act.access() == MainActivity.Access.FULL, verbose))) {
+                act.push(ScanScreen(act))
+            }
+        }
     }
 
     private fun openResults() {
@@ -431,12 +481,11 @@ class FoldersScreen(act: MainActivity) : Screen(act) {
             }
             selection.selected.clear()
             for (f in match) selection.selected.add(f.key)
-            save()
             refresh()
         }
         if (autoscan) {
             verboseNext = true
-            startScan()
+            startScan(remember = false)
         }
     }
 
@@ -458,12 +507,12 @@ class FoldersScreen(act: MainActivity) : Screen(act) {
         }
         val photos = switchRow("Photos", "Identical copies of photos", o.photos)
         val videos = switchRow("Videos", "Identical copies of videos", o.videos)
-        val similar = switchRow("Look-alike photos", "Resized, re-saved, turned or cropped copies", o.similar)
-        val bursts = switchRow("Burst shots", "Photos taken a moment apart: keeps the sharpest", o.bursts)
-        val poor = switchRow("Blurry and dark photos", "Listed on their own, never ticked for you", o.poor)
+        val similar = switchRow("Look-alike photos", "Resized, re-saved, turned or cropped copies. Edits are shown, never ticked", o.similar)
+        val bursts = switchRow("Burst shots", "Near-identical shots a moment apart: keeps the sharpest", o.bursts)
+        val poor = switchRow("Blurry and dark photos", "Camera photos only. Listed on their own, never ticked for you", o.poor)
         val strict = RadioButton(ctx).apply { text = "Strict: only near-identical pictures"; id = View.generateViewId() }
         val normal = RadioButton(ctx).apply { text = "Normal"; id = View.generateViewId() }
-        val loose = RadioButton(ctx).apply { text = "Loose: also more edited copies"; id = View.generateViewId() }
+        val loose = RadioButton(ctx).apply { text = "Loose: shows more, ticks no more than Normal"; id = View.generateViewId() }
         val group = RadioGroup(ctx).apply {
             addView(strict)
             addView(normal)
@@ -518,9 +567,13 @@ class FoldersScreen(act: MainActivity) : Screen(act) {
             text = """
                 Photo Cleaner finds identical copies, look-alike photos (resized, re-saved, turned or cropped), burst shots, and blurry or dark photos in the folders you choose. For each group it suggests the copy to keep: the largest and sharpest, an original from the camera over one saved from a chat, and always your favourites.
 
+                It only ticks what it is sure of. An edited version, a RAW file's JPEG twin, a favourite or a picture that merely has the same layout (two pages of text, two screens of an app) is never ticked for you, and what you untick stays unticked in later scans.
+
                 Nothing is deleted for good. Files you remove go to the phone's trash and stay there for 30 days: Undo brings them straight back, and so does the trash in the Files or Photos app.
 
                 Nothing leaves your phone. The app has no internet access. It remembers fingerprints of your photos in its own storage, so the next scan only reads new files.
+
+                It reads your photos on every processor core, and keeps the phone awake while it scans.
 
                 Version $version
             """.trimIndent()

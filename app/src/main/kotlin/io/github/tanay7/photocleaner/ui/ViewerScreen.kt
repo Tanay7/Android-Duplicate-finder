@@ -89,7 +89,7 @@ class ViewerScreen(
         val m = members[i]
         val item = r.items[m.item]
         val row = r.rows[m.item]
-        title.text = "${i + 1} of ${members.size} · ${Words.groupTitle(g, members.size)}"
+        title.text = "${i + 1} of ${members.size} · ${Words.groupTitle(g, members)}"
         name.text = item.name
         where.text = (item.folder.ifEmpty { "Top folder" }) + "  ·  " + Words.label(m, g)
         val w = row?.width?.takeIf { it > 0 } ?: item.shownWidth
@@ -148,7 +148,7 @@ class ViewerScreen(
 
     private fun toggleCurrent() {
         val item = members[index].item
-        Prefs.setOverrides(ctx, r.tick(mapOf(item to (item !in r.selected))))
+        r.tick(mapOf(item to (item !in r.selected))).let { Prefs.choose(ctx, it.keep, it.tick) }
         updateToggle()
     }
 

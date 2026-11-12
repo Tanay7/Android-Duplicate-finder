@@ -15,6 +15,7 @@ import io.github.tanay7.photocleaner.scan.Stage
 class ScanScreen(act: MainActivity) : Screen(act) {
     private var unlisten: (() -> Unit)? = null
     private var finished = false
+    private var stopping = false
 
     private val title = ui.text("Looking for duplicates", 24f, c.onSurface, 500).apply { gravity = Gravity.CENTER }
     private val stage = ui.text("", 15f, c.onSurfaceVariant).apply { gravity = Gravity.CENTER }
@@ -59,6 +60,8 @@ class ScanScreen(act: MainActivity) : Screen(act) {
         unlisten = null
     }
 
+    override fun onDestroy() = onHidden()
+
     override fun onBack(): Boolean {
         if (ScanState.running) confirmCancel() else act.pop()
         return true
@@ -68,6 +71,7 @@ class ScanScreen(act: MainActivity) : Screen(act) {
         if (finished) return
         when (s) {
             is ScanState.Running -> {
+                if (stopping) return
                 stage.text = ScanService.stageText(s.stage, s.done, s.total)
                 coresLine.text = if (s.stage == Stage.READING || s.stage == Stage.VIDEOS || s.stage == Stage.COMPARING) {
                     ScanService.coresText(if (s.stage == Stage.COMPARING) Runtime.getRuntime().availableProcessors() else s.threads)
@@ -89,7 +93,9 @@ class ScanScreen(act: MainActivity) : Screen(act) {
                 stage.text = s.message
                 progress.visibility = View.INVISIBLE
                 hint.visibility = View.GONE
+                coresLine.text = ""
                 button.text = "Back"
+                ui.enable(button, true)
                 button.setOnClickListener { act.pop() }
             }
             ScanState.Idle -> {
@@ -107,7 +113,12 @@ class ScanScreen(act: MainActivity) : Screen(act) {
         AlertDialog.Builder(ctx)
             .setTitle("Stop the scan?")
             .setMessage("What it has read so far is remembered, so the next scan picks up from there.")
-            .setPositiveButton("Stop") { _, _ -> ScanService.cancel() }
+            .setPositiveButton("Stop") { _, _ ->
+                stopping = true
+                stage.text = "Stopping…"
+                ui.enable(button, false)
+                ScanService.cancel()
+            }
             .setNegativeButton("Keep scanning", null)
             .show()
     }

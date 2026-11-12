@@ -1,6 +1,7 @@
 package io.github.tanay7.photocleaner.core
 
 import kotlin.math.abs
+import kotlin.math.max
 import kotlin.math.min
 
 enum class MediaKind { PHOTO, VIDEO }
@@ -16,6 +17,8 @@ class Item(
     val favorite: Boolean,
     /** In a folder where originals are made: the camera, screenshots, screen recordings. */
     val original: Boolean,
+    /** A camera RAW file (DNG and the like): never pre-selected against its JPEG twin, nor the twin against it. */
+    val raw: Boolean,
     /** SHA-256 of the whole file, or null when it wasn't needed or couldn't be read. */
     val sha: String?,
     /** Full-size pixels after rotation, 0 when unknown. */
@@ -45,12 +48,42 @@ class MatchOptions(
     val clipCutoff: Float = 25f,
     /** Threads for comparing every pair of photos: all cores, the calling thread included. */
     val threads: Int = 1,
+    /** Asked now and then while comparing; true stops the work with a CancellationException. */
+    val cancelled: () -> Boolean = { false },
+    /** Told how far comparing every pair is: (done, total). Called from several threads. */
+    val progress: ((Int, Int) -> Unit)? = null,
 ) {
+    /**
+     * Most differing fine bits ([ImageFeatures.fine], of 255) for two photos to count as look-alikes
+     * at all. The 64 bits of the pHash only see a picture's layout: about 1 pair in 100 of different
+     * text pages, and some pairs of different app screens, pass them. Real copies differ in under 16
+     * fine bits (under 35 when cut by a hundredth); different pictures that share their layout in
+     * over 55.
+     */
+    val linkFine: Int get() = if (maxBits <= 4) 16 else 48
+
+    /** A look-alike is pre-selected only when this sure: at most 8 pHash bits, whatever [maxBits] allows. */
+    val sureBits: Int get() = min(maxBits, 8)
+
+    /** ... and at most this many fine bits (the same share of the bits). */
+    val sureFine: Int get() = sureBits * 4
+
     companion object {
-        /** Most differing bits between neighbouring burst shots. */
+        /** Most differing pHash bits between neighbouring burst shots. */
         const val BURST_BITS = 16
+        /**
+         * Most differing fine bits between burst shots. Pages of a document photographed one after
+         * the other are within [BURST_BITS] three times in ten, but differ in over 60 fine bits
+         * (in 80 or more nineteen times in twenty); hand-held frames of one moment differ in under 55.
+         */
+        const val BURST_FINE = 56
         /** Chroma difference (0-255 scale) above which photos differ in colour. */
         const val COLOUR_DIFF_CUT = 28f
+        // A look-alike differing by more than these from the kept copy is an edit, not a re-save.
+        const val EDIT_MEAN = 8f           // mean brightness, 0-255
+        const val EDIT_CONTRAST = 1.15f    // ratio of the contrasts (halving a photo's size changes it by up to 1.08)
+        const val EDIT_SATURATION = 3f     // colourfulness, and at least 15 % of it
+        const val EDIT_CHROMA = 5f         // average colour
     }
 }
 
@@ -75,6 +108,10 @@ class Member(
     val relSharpness: Float?,
     /** Why it isn't pre-selected, when that isn't obvious. */
     val note: String?,
+    /** A frame of the group's burst (not a copy of one). */
+    val frame: Boolean = false,
+    /** A look-alike whose brightness or colours differ from the kept copy's: an edit. */
+    val edited: Boolean = false,
 )
 
 class Group(
@@ -95,10 +132,15 @@ class Group(
  *    mirrored or cropped), unless the two clearly differ in colour;
  *  - burst: shots from one camera at most [MatchOptions.burstGap] seconds apart that look alike.
  *
+ * On top of DupeFinder's rules, every look-alike and burst link must also pass the fine fingerprint
+ * ([MatchOptions.linkFine], [MatchOptions.BURST_FINE]), which tells real copies from different
+ * pictures with the same layout (text pages, app screens).
+ *
  * Linked files form groups (a file can join through another one). Each member is then compared with
- * the kept copy directly: only identical copies, look-alikes and burst frames are pre-selected, never
- * a mirrored or cropped version (it may be a deliberate edit), a favourite, or a file that is only
- * linked through another one.
+ * the kept copy directly. Pre-selected are only identical copies, sure look-alikes and burst frames
+ * close to the kept shot; never a mirrored or cropped version or one with other brightness or colours
+ * (it may be a deliberate edit), a RAW file's JPEG twin, a favourite, or a file that is only linked
+ * through another one.
  */
 class Matcher(private val items: List<Item>, private val o: MatchOptions = MatchOptions()) {
     private val uf = UnionFind(items.size)
@@ -137,16 +179,25 @@ class Matcher(private val items: List<Item>, private val o: MatchOptions = Match
             extra[i * 5 + 4] = f[i].cropHash
         }
         val maxBits = o.maxBits
+        val linkFine = o.linkFine
         parallel(n) { from, to, link ->
             for (i in from until to) {
                 val h = hashes[i]
+                val fi = f[i]
                 for (j in i + 1 until n) {
-                    if (java.lang.Long.bitCount(h xor hashes[j]) <= maxBits && colourOk(f[i], f[j])) link(ph[i], ph[j])
+                    if (java.lang.Long.bitCount(h xor hashes[j]) <= maxBits && colourOk(fi, f[j]) &&
+                        ImageAnalysis.fineDistance(fi.fine, f[j].fine) <= linkFine
+                    ) link(ph[i], ph[j])
                 }
-                for (e in extra.indices) {
-                    val owner = e / 5
-                    if (owner == i) continue
-                    if (java.lang.Long.bitCount(h xor extra[e]) <= maxBits && colourOk(f[i], f[owner])) link(ph[i], ph[owner])
+                for (j in 0 until n) {
+                    if (j == i) continue
+                    val base = j * 5
+                    for (v in 0 until 5) {
+                        if (java.lang.Long.bitCount(h xor extra[base + v]) > maxBits) continue
+                        val fj = f[j]
+                        val fine = if (v == 4) fj.cropFine else ImageAnalysis.fineVariant(fj.fine, v)
+                        if (colourOk(fi, fj) && ImageAnalysis.fineDistance(fi.fine, fine) <= linkFine) link(ph[i], ph[j])
+                    }
                 }
             }
         }
@@ -206,10 +257,12 @@ class Matcher(private val items: List<Item>, private val o: MatchOptions = Match
         return out
     }
 
+    /** Two shots of one moment: alike in layout and in detail. */
     private fun burstAlike(a: Int, b: Int): Boolean {
         val fa = items[a].features!!
         val fb = items[b].features!!
-        return !fa.flat && !fb.flat && ImageAnalysis.hamming(fa.phash, fb.phash) <= MatchOptions.BURST_BITS
+        return !fa.flat && !fb.flat && ImageAnalysis.hamming(fa.phash, fb.phash) <= MatchOptions.BURST_BITS &&
+            ImageAnalysis.fineDistance(fa.fine, fb.fine) <= MatchOptions.BURST_FINE
     }
 
     private fun closeChain(chain: List<Int>) {
@@ -251,34 +304,50 @@ class Matcher(private val items: List<Item>, private val o: MatchOptions = Match
             r.features?.let { fe ->
                 if (isBurst && f in burstChain && topSharp > 0) {
                     relSharp = ImageAnalysis.round1(fe.detail / topSharp * 100.0)
-                } else if (!fe.sharpness.isNaN() && fe.sharpness < o.blurCutoff && !fe.flat) {
+                } else if (cameraShot(r) && !fe.sharpness.isNaN() && fe.sharpness < o.blurCutoff && !fe.flat) {
                     flags.add(Flag.BLURRY)
                 }
-                flags.addAll(exposureFlags(fe))
+                if (cameraShot(r)) flags.addAll(exposureFlags(fe))
             }
+            val frame = f in burstChain
             if (f == keeper) {
                 if (r.favorite) flags.add(Flag.FAVORITE)
-                return@map Member(f, true, Relation.KEEP, null, null, null, false, flags, relSharp, null)
+                return@map Member(f, true, Relation.KEEP, null, null, null, false, flags, relSharp, null, frame)
             }
             val rel = relation(f, keeper)
-            var relation = rel?.relation ?: Relation.VIA
-            var suggest = relation == Relation.IDENTICAL || relation == Relation.BURST || relation == Relation.LOOKALIKE
+            val relation = rel?.relation ?: Relation.VIA
+            var suggest = rel != null && rel.sure
             var note: String? = null
             var via: Int? = null
-            if (rel?.how == "mirrored" || rel?.how == "cropped") {
-                suggest = false
-                note = "A ${rel.how} version may be a deliberate edit, so it isn't pre-selected"
+            var edited = false
+            when (relation) {
+                Relation.VIA -> via = fids.firstOrNull { it != f && it != keeper && relation(f, it) != null }
+                Relation.BURST ->
+                    if (!suggest) note = "A different moment of the burst than the kept shot, so it isn't pre-selected"
+                Relation.LOOKALIKE -> {
+                    edited = edited(r.features!!, items[keeper].features!!)
+                    if (rel!!.how == "mirrored" || rel.how == "cropped") {
+                        suggest = false
+                        note = "A ${rel.how} version may be a deliberate edit, so it isn't pre-selected"
+                    } else if (!suggest) {
+                        note = "It looks like the kept copy but differs in the details, so it isn't pre-selected"
+                    } else if (edited) {
+                        suggest = false
+                        note = "Its brightness or colours differ from the kept copy's (it may be an edit), so it isn't pre-selected"
+                    }
+                }
+                else -> Unit
             }
-            if (rel == null) {
-                via = fids.firstOrNull { it != f && it != keeper && relation(f, it) != null }
-                relation = Relation.VIA
+            if (relation != Relation.IDENTICAL && relation != Relation.VIA && r.raw != items[keeper].raw) {
+                suggest = false
+                note = "RAW and non-RAW versions of the same photo, so it isn't pre-selected"
             }
             if (r.favorite) {
                 flags.add(Flag.FAVORITE)
                 suggest = false
                 note = "A favourite, so it isn't pre-selected"
             }
-            Member(f, false, relation, rel?.score, rel?.how, via, suggest, flags, relSharp, note)
+            Member(f, false, relation, rel?.score, rel?.how, via, suggest, flags, relSharp, note, frame, edited)
         }
         val others = members.filter { !it.keeper }
         val type = when {
@@ -294,36 +363,50 @@ class Matcher(private val items: List<Item>, private val o: MatchOptions = Match
         return Group(type, items[keeper].kind, ordered, keeper, if (isBurst) burstFids.size else 0)
     }
 
-    private class Rel(val relation: Relation, val score: Float?, val how: String?)
+    private class Rel(val relation: Relation, val score: Float?, val how: String?, val sure: Boolean)
 
-    /** The strongest check that matches item r directly against item k. */
+    /** The strongest check that matches item r directly against item k; [Rel.sure] when it may be pre-selected. */
     private fun relation(r: Int, k: Int): Rel? {
         val a = items[r]
         val b = items[k]
-        if (a.sha != null && a.sha == b.sha && a.kind == b.kind) return Rel(Relation.IDENTICAL, 100f, null)
+        if (a.sha != null && a.sha == b.sha && a.kind == b.kind) return Rel(Relation.IDENTICAL, 100f, null, true)
         val fa = a.features ?: return null
         val fb = b.features ?: return null
         val ca = burstChain[r]
-        if (ca != null && ca == burstChain[k]) return Rel(Relation.BURST, null, null)
+        if (ca != null && ca == burstChain[k]) return Rel(Relation.BURST, null, null, burstAlike(r, k))
         if (fa.flat || fb.flat || !colourOk(fa, fb)) return null
-        val d = ImageAnalysis.hamming(fa.phash, fb.phash)
-        if (d <= o.maxBits) return Rel(Relation.LOOKALIKE, ImageAnalysis.visualScore(d), null)
-        var best = Int.MAX_VALUE
-        var how: String? = null
-        for (v in 0 until 4) {
-            val dv = ImageAnalysis.hamming(fa.phash, fb.variants[v])
-            if (dv < best) {
-                best = dv
-                how = VARIANT_NAMES[v]
+        var best: Rel? = null
+        var bestFine = Int.MAX_VALUE
+        fun consider(bits: Int, fine: () -> Int, how: String?) {
+            if (bits > o.maxBits) return
+            val fd = fine()
+            if (fd > o.linkFine || fd >= bestFine) return
+            bestFine = fd
+            best = Rel(Relation.LOOKALIKE, ImageAnalysis.fineScore(fd), how, bits <= o.sureBits && fd <= o.sureFine)
+        }
+        consider(ImageAnalysis.hamming(fa.phash, fb.phash), { ImageAnalysis.fineDistance(fa.fine, fb.fine) }, null)
+        if (best == null) {
+            for (v in 0 until 4) {
+                consider(ImageAnalysis.hamming(fa.phash, fb.variants[v]),
+                    { ImageAnalysis.fineDistance(fa.fine, ImageAnalysis.fineVariant(fb.fine, v)) }, VARIANT_NAMES[v])
             }
+            consider(ImageAnalysis.hamming(fa.phash, fb.cropHash), { ImageAnalysis.fineDistance(fa.fine, fb.cropFine) }, "cropped")
+            consider(ImageAnalysis.hamming(fb.phash, fa.cropHash), { ImageAnalysis.fineDistance(fb.fine, fa.cropFine) }, "cropped")
         }
-        val dc = min(ImageAnalysis.hamming(fa.phash, fb.cropHash), ImageAnalysis.hamming(fb.phash, fa.cropHash))
-        if (dc < best) {
-            best = dc
-            how = "cropped"
-        }
-        if (best <= o.maxBits) return Rel(Relation.LOOKALIKE, ImageAnalysis.visualScore(best), how)
-        return null
+        return best
+    }
+
+    /**
+     * True when two look-alikes differ in brightness, contrast or colour by more than saving a photo
+     * again or resizing it changes them: one is an edit of the other (a filter, black and white, a
+     * brighter version), which someone made on purpose.
+     */
+    private fun edited(a: ImageFeatures, b: ImageFeatures): Boolean {
+        if (abs(a.mean - b.mean) > MatchOptions.EDIT_MEAN) return true
+        if (max(a.contrast, b.contrast) > min(a.contrast, b.contrast) * MatchOptions.EDIT_CONTRAST + 1f) return true
+        val sat = max(a.saturation, b.saturation)
+        if (abs(a.saturation - b.saturation) > max(MatchOptions.EDIT_SATURATION, 0.15f * sat)) return true
+        return abs(a.cb - b.cb) + abs(a.cr - b.cr) > MatchOptions.EDIT_CHROMA
     }
 
     private fun chooseKeeper(fids: List<Int>): Int {
@@ -352,6 +435,13 @@ class Matcher(private val items: List<Item>, private val o: MatchOptions = Match
         return if (exposureFlags(f).isEmpty()) f.detail.toDouble() else f.detail * 0.5
     }
 
+    /**
+     * A photo a camera took (its EXIF data names the camera or the moment). Only those are judged
+     * blurry, dark or badly exposed: a screenshot of a white page is "overexposed" by the numbers,
+     * and a drawing "blurry", and neither is a poor shot.
+     */
+    private fun cameraShot(it: Item) = it.camera != null || it.takenAt != null
+
     fun exposureFlags(f: ImageFeatures): List<Flag> {
         val out = ArrayList<Flag>(2)
         if (f.median < o.darkCutoff) out.add(Flag.DARK)
@@ -365,7 +455,7 @@ class Matcher(private val items: List<Item>, private val o: MatchOptions = Match
         for (g in groups) for (m in g.members) grouped.add(m.item)
         val members = ArrayList<Member>()
         for (i in photos) {
-            if (i in grouped) continue
+            if (i in grouped || !cameraShot(items[i])) continue
             val f = items[i].features!!
             if (f.sharpness.isNaN()) continue
             val flags = HashSet<Flag>()
@@ -397,7 +487,13 @@ class Matcher(private val items: List<Item>, private val o: MatchOptions = Match
         val lock = Any()
         val threads = o.threads.coerceIn(1, 64)
         if (threads == 1 || n < 256) {
-            body(0, n) { a, b -> uf.union(a, b) }
+            // In slices, so that a big job on one thread can still be stopped and shows how far it is.
+            val slices = if (n < 256) 1 else 64
+            for (c in 0 until slices) {
+                if (o.cancelled()) throw java.util.concurrent.CancellationException()
+                body(n.toLong().times(c).div(slices).toInt(), n.toLong().times(c + 1).div(slices).toInt()) { a, b -> uf.union(a, b) }
+                o.progress?.invoke(c + 1, slices)
+            }
             return
         }
         // Row i costs (n - 1 - i) direct comparisons plus 5(n - 1) against the turned, mirrored and
@@ -411,6 +507,7 @@ class Matcher(private val items: List<Item>, private val o: MatchOptions = Match
         }
         bounds[chunks] = n
         val next = java.util.concurrent.atomic.AtomicInteger()
+        val done = java.util.concurrent.atomic.AtomicInteger()
         val failure = java.util.concurrent.atomic.AtomicReference<Throwable>()
         val work = Runnable {
             val buf = IntArray(4096)
@@ -429,11 +526,13 @@ class Matcher(private val items: List<Item>, private val o: MatchOptions = Match
                 while (failure.get() == null) {
                     val c = next.getAndIncrement()
                     if (c >= chunks) break
+                    if (o.cancelled()) throw java.util.concurrent.CancellationException()
                     body(bounds[c], bounds[c + 1]) { a, b ->
                         if (k == buf.size) flush()
                         buf[k++] = a
                         buf[k++] = b
                     }
+                    o.progress?.invoke(done.incrementAndGet(), chunks)
                 }
                 flush()
             } catch (t: Throwable) {

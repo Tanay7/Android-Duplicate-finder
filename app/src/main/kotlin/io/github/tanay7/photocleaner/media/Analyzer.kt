@@ -4,14 +4,26 @@
 package io.github.tanay7.photocleaner.media
 
 import android.content.ContentResolver
+import android.content.res.AssetFileDescriptor
 import android.graphics.Bitmap
+import android.graphics.ColorSpace
 import android.graphics.ImageDecoder
 import android.media.ExifInterface
+import android.os.ParcelFileDescriptor
+import android.provider.MediaStore
+import android.system.Os
+import android.system.OsConstants
+import io.github.tanay7.photocleaner.core.Budget
 import io.github.tanay7.photocleaner.core.ImageAnalysis
 import io.github.tanay7.photocleaner.core.ImageFeatures
+import io.github.tanay7.photocleaner.core.Parallelism
 import io.github.tanay7.photocleaner.core.Scratch
+import java.io.FileInputStream
 import java.io.IOException
 import java.security.MessageDigest
+import java.util.concurrent.Callable
+import java.util.concurrent.CancellationException
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -21,68 +33,135 @@ object Analyzer {
      * What one reading thread keeps from file to file: the analysis buffers, a read buffer and the
      * hash state. Reusing them means a photo allocates almost nothing on the Java heap, so every
      * core can read at once without the garbage collector pausing them all. One per thread.
+     *
+     * [stop] ends a long read early; [touch] is called when a wait for memory is over, so the wait
+     * doesn't count as time the file took.
      */
-    class Worker {
+    class Worker(val stop: AtomicBoolean = AtomicBoolean(), val touch: () -> Unit = {}) {
         val scratch = Scratch()
         val buf = ByteArray(1 shl 20)
         val digest: MessageDigest = MessageDigest.getInstance("SHA-256")
     }
 
     /**
-     * Reads a photo: its SHA-256 (streamed, never held in memory) and, if [wantFeatures], its EXIF
-     * capture time and camera and its pixels, decoded reduced to at most 1024 px (turned the way its
-     * EXIF data says) and measured. Failures come back in the row's error, except running out of
-     * memory, which the scanner answers by trying the file again on its own.
+     * How a scan reads its files.
+     *
+     * [original]: the files' own bytes (the app holds the media-location permission) rather than the
+     * copies Android hands out with the place a photo was taken blanked out. Only the own bytes make
+     * "identical" mean byte for byte, and they are quicker to get: Android doesn't have to look for
+     * location data in every file, and reads don't pass through its filter.
+     *
+     * [budget]: the memory decoders may use at once, in bytes.
      */
-    fun photo(cr: ContentResolver, item: MediaItem, wantFeatures: Boolean, w: Worker): FeatureRow {
-        val sha = try {
-            sha256(cr, item, w)
+    class Reading(val cr: ContentResolver, val original: Boolean, val budget: Budget)
+
+    /**
+     * Reads a photo, opening it once: its SHA-256 (streamed, never held in memory) and, if
+     * [wantFeatures], its EXIF capture time and camera and its pixels, decoded reduced to at most
+     * 1024 px (turned the way its EXIF data says, in sRGB) and measured. Failures come back in the
+     * row's error, except running out of memory, which the scanner answers by trying the file again
+     * on its own.
+     */
+    fun photo(rd: Reading, item: MediaItem, wantFeatures: Boolean, w: Worker): FeatureRow {
+        val pfd = try {
+            open(rd, item)
         } catch (e: Exception) {
-            return failed(item, "Can't read: ${e.message ?: e.javaClass.simpleName}")
+            return failed(item, rd, "Can't read: ${e.message ?: e.javaClass.simpleName}")
         }
-        if (!wantFeatures) return FeatureRow(item.key, item.size, item.modified, sha, item.shownWidth, item.shownHeight, null, null, null, null)
-        var taken: Double? = null
-        var camera: String? = null
-        try {
-            cr.openFileDescriptor(item.uri, "r")?.use { pfd ->
-                val exif = ExifInterface(pfd.fileDescriptor)
+        pfd.use {
+            val sha = try {
+                sha256(pfd, w)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                return failed(item, rd, "Can't read: ${e.message ?: e.javaClass.simpleName}")
+            }
+            if (!wantFeatures) return row(item, rd, sha, item.shownWidth, item.shownHeight, null, null, null, null)
+            var taken: Double? = null
+            var camera: String? = null
+            try {
+                Os.lseek(pfd.fileDescriptor, 0, OsConstants.SEEK_SET)
+                val exif = ExifInterface(FileInputStream(pfd.fileDescriptor))
                 val t = exif.dateTimeOriginal
                 if (t > 0) taken = t / 1000.0
                 camera = listOfNotNull(exif.getAttribute(ExifInterface.TAG_MAKE), exif.getAttribute(ExifInterface.TAG_MODEL))
                     .joinToString(" ") { it.trim() }.trim().ifEmpty { null }
+            } catch (_: Exception) {
+                // no EXIF data (PNG, GIF) or unreadable: no capture time, so it can't be a burst frame
             }
-        } catch (_: Exception) {
-            // no EXIF data (PNG, GIF) or unreadable: no capture time, so it can't be a burst frame
-        }
-        return try {
-            val d = decode(cr, item, w)
-            FeatureRow(item.key, item.size, item.modified, sha, d.width, d.height, taken, camera, d.features, null)
-        } catch (e: OutOfMemoryError) {
-            throw e
-        } catch (e: Exception) {
-            FeatureRow(item.key, item.size, item.modified, sha, item.shownWidth, item.shownHeight, taken, camera, null,
-                "$CANT_DECODE${e.message ?: e.javaClass.simpleName}")
+            // Waiting for memory isn't time the file took: the watchdog's clock is reset meanwhile.
+            val got = rd.budget.acquire(Parallelism.decodeBytes(item.mime, item.name, item.width, item.height)) {
+                w.touch()
+                w.stop.get()
+            }
+            w.touch()
+            return try {
+                val d = decode(pfd, w)
+                row(item, rd, sha, d.width, d.height, taken, camera, d.features, null)
+            } catch (e: OutOfMemoryError) {
+                throw e
+            } catch (e: Exception) {
+                row(item, rd, sha, item.shownWidth, item.shownHeight, taken, camera, null, "$CANT_DECODE${e.message ?: e.javaClass.simpleName}")
+            } finally {
+                rd.budget.release(got)
+            }
         }
     }
 
     /** A video: only its SHA-256, for exact copies. */
-    fun video(cr: ContentResolver, item: MediaItem, w: Worker): FeatureRow = try {
-        FeatureRow(item.key, item.size, item.modified, sha256(cr, item, w), item.shownWidth, item.shownHeight, null, null, null, null)
+    fun video(rd: Reading, item: MediaItem, w: Worker): FeatureRow = try {
+        open(rd, item).use { row(item, rd, sha256(it, w), item.shownWidth, item.shownHeight, null, null, null, null) }
+    } catch (e: CancellationException) {
+        throw e
     } catch (e: Exception) {
-        failed(item, "Can't read: ${e.message ?: e.javaClass.simpleName}")
+        failed(item, rd, "Can't read: ${e.message ?: e.javaClass.simpleName}")
     }
 
-    fun failed(item: MediaItem, why: String) =
-        FeatureRow(item.key, item.size, item.modified, null, item.shownWidth, item.shownHeight, null, null, null, why)
+    /**
+     * True if Android gives this app the files' own bytes. Asked of a few files before a scan (with
+     * the permission it always should; this makes sure, so a whole scan never fails on it).
+     */
+    fun givesOriginals(cr: ContentResolver, items: List<MediaItem>): Boolean {
+        for (item in items.take(5)) {
+            try {
+                cr.openFileDescriptor(MediaStore.setRequireOriginal(item.uri), "r")?.close() ?: continue
+                return true
+            } catch (_: UnsupportedOperationException) {
+                return false
+            } catch (_: SecurityException) {
+                return false
+            } catch (_: Exception) {
+                // this file can't be opened at all: ask the next one
+            }
+        }
+        return items.isEmpty()
+    }
+
+    private fun open(rd: Reading, item: MediaItem): ParcelFileDescriptor =
+        rd.cr.openFileDescriptor(if (rd.original) MediaStore.setRequireOriginal(item.uri) else item.uri, "r")
+            ?: throw IOException("no access")
+
+    private fun row(
+        item: MediaItem, rd: Reading, sha: String?, w: Int, h: Int, taken: Double?, camera: String?, f: ImageFeatures?, error: String?,
+    ) = FeatureRow(item.key, item.size, item.modified, sha, w, h, taken, camera, f, error, rd.original)
+
+    fun failed(item: MediaItem, rd: Reading, why: String) = row(item, rd, null, item.shownWidth, item.shownHeight, null, null, null, why)
+
+    /** A file that made the app die when it was read on its own: left out until it changes. */
+    fun quarantined(item: MediaItem, original: Boolean) =
+        FeatureRow(item.key, item.size, item.modified, null, item.shownWidth, item.shownHeight, null, null, null, QUARANTINED, original)
 
     const val CANT_DECODE = "Can't decode: "
+    const val QUARANTINED = "Skipped: reading it stopped the app"
 
     class Decoded(val width: Int, val height: Int, val features: ImageFeatures)
 
-    private fun decode(cr: ContentResolver, item: MediaItem, w: Worker): Decoded {
+    private fun decode(pfd: ParcelFileDescriptor, w: Worker): Decoded {
         var fullW = 0
         var fullH = 0
-        val bmp = ImageDecoder.decodeBitmap(ImageDecoder.createSource(cr, item.uri)) { decoder, info, _ ->
+        // The decoder reads through its own handle on the same open file, from the start, and closes it.
+        val source = ImageDecoder.createSource(Callable { AssetFileDescriptor(pfd.dup(), 0, AssetFileDescriptor.UNKNOWN_LENGTH) })
+        val bmp = ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
             fullW = info.size.width
             fullH = info.size.height
             val long = max(fullW, fullH)
@@ -91,6 +170,9 @@ object Analyzer {
                 decoder.setTargetSize(max(1, (fullW * s).roundToInt()), max(1, (fullH * s).roundToInt()))
             }
             decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+            // Phones save photos in a wider colour space; converted here once, the pixels come out as
+            // plain sRGB without a conversion for every row that is read.
+            decoder.setTargetColorSpace(SRGB)
         }
         val held = ArrayList<Bitmap>(3)
         held.add(bmp)
@@ -123,22 +205,24 @@ object Analyzer {
         }
     }
 
+    private val SRGB: ColorSpace = ColorSpace.get(ColorSpace.Named.SRGB)
+
     /**
-     * SHA-256 of a whole file, read through the worker's buffer. An empty file has no fingerprint:
-     * empty files aren't copies of each other in any useful sense.
+     * SHA-256 of a whole file, read from its start through the worker's buffer. An empty file has no
+     * fingerprint: empty files aren't copies of each other in any useful sense.
      */
-    fun sha256(cr: ContentResolver, item: MediaItem, w: Worker): String {
+    private fun sha256(pfd: ParcelFileDescriptor, w: Worker): String {
         val digest = w.digest
         digest.reset()
         var total = 0L
-        val stream = cr.openInputStream(item.uri) ?: throw IOException("no stream")
-        stream.use {
-            while (true) {
-                val n = it.read(w.buf)
-                if (n < 0) break
-                digest.update(w.buf, 0, n)
-                total += n
-            }
+        // Reads from the handle's position (the start: it was just opened) and doesn't close it.
+        val stream = FileInputStream(pfd.fileDescriptor)
+        while (true) {
+            val n = stream.read(w.buf)
+            if (n < 0) break
+            digest.update(w.buf, 0, n)
+            total += n
+            if (w.stop.get()) throw CancellationException()
         }
         if (total == 0L) throw IOException("the file is empty")
         return hex(digest.digest())

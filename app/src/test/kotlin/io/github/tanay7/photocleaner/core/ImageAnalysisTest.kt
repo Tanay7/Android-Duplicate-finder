@@ -38,11 +38,63 @@ class ImageAnalysisTest {
         assertTrue("turning should change the plain hash", hamming(r90, f.phash) > 8)
     }
 
+    @Test fun fineFingerprintFollowsTurnsAndFlips() {
+        val fine = ImageAnalysis::fineDistance
+        assertTrue(fine(Scenes.rotate180(base).features().fine, ImageAnalysis.fineVariant(f.fine, 1)) <= 8)
+        assertTrue(fine(Scenes.mirror(base).features().fine, ImageAnalysis.fineVariant(f.fine, 3)) <= 8)
+        val r90 = Scenes.rotate90(base).features().fine
+        val r270 = Scenes.rotate90(Scenes.rotate180(base)).features().fine
+        // the same variant that the pHash of the turned photo matches
+        val v90 = if (hamming(Scenes.rotate90(base).features().phash, f.variants[0]) <= 2) 0 else 2
+        assertTrue(fine(r90, ImageAnalysis.fineVariant(f.fine, v90)) <= 8)
+        assertTrue(fine(r270, ImageAnalysis.fineVariant(f.fine, 2 - v90)) <= 8)
+        assertTrue("turning should change the plain fingerprint", fine(r90, f.fine) > 64)
+        // turning back gives the fingerprint back, bit for bit
+        assertEquals(0, fine(ImageAnalysis.fineVariant(ImageAnalysis.fineVariant(f.fine, 0), 2), f.fine))
+        assertEquals(0, fine(ImageAnalysis.fineVariant(ImageAnalysis.fineVariant(f.fine, 3), 3), f.fine))
+    }
+
+    @Test fun fineFingerprintTellsCopiesFromPicturesWithTheSameLayout() {
+        val fine = ImageAnalysis::fineDistance
+        // copies: resized, saved again
+        for (seed in 0 until 6) {
+            for (p in listOf(Scenes.page(seed), Scenes.screen(seed), Scenes.scene(seed, 800, 600))) {
+                val fp = p.features()
+                assertTrue(fine(fp.fine, Scenes.resize(p, p.w / 2, p.h / 2).features().fine) <= 16)
+                assertTrue(fine(fp.fine, Scenes.noise(Scenes.resize(p, p.w / 3, p.h / 3), 3.0, 1).features().fine) <= 24)
+            }
+        }
+        // different pages whose pHashes are close
+        val pages = (0 until 60).map { Scenes.page(it).features() }
+        var close = 0
+        for (i in pages.indices) for (j in i + 1 until pages.size) {
+            if (hamming(pages[i].phash, pages[j].phash) > 16) continue
+            close++
+            val d = fine(pages[i].fine, pages[j].fine)
+            assertTrue("pages $i and $j only $d fine bits apart", d > 64)
+        }
+        assertTrue(close > 100)
+    }
+
+    @Test fun brightnessAndContrastAreMeasured() {
+        val grey = Scenes.uniform(100).features()
+        assertEquals(100f, grey.mean, 0.01f)
+        assertEquals(0f, grey.contrast, 0.01f)
+        val brighter = Scenes.scale(base, 1.15).features()
+        assertTrue(brighter.mean > f.mean + 8)
+        assertTrue(Scenes.contrast(base, 0.8).features().contrast < f.contrast * 0.87f)
+        // a resize leaves both nearly alone
+        val small = Scenes.resize(base, 400, 300).features()
+        assertEquals(f.mean, small.mean, 1f)
+        assertTrue(f.contrast / small.contrast < 1.1f)
+    }
+
     @Test fun centreCropMatchesTheCropHash() {
         // a wide photo cropped to its centre square
         val wide = Scenes.scene(3, 900, 500)
         val square = Scenes.crop(wide, 200, 0, 500, 500)
         assertTrue(hamming(square.features().phash, wide.features().cropHash) <= 2)
+        assertTrue(ImageAnalysis.fineDistance(square.features().fine, wide.features().cropFine) <= 8)
     }
 
     @Test fun flatPicturesAreFlagged() {

@@ -1,17 +1,20 @@
 #!/usr/bin/env bash
 # On-device test, run by CI inside an Android emulator:
-#   device-test.sh APK TESTDATA      (TESTDATA from scripts/make_test_photos.py)
+#   device-test.sh APK TESTDATA [DEBUG_APK]      (TESTDATA from scripts/make_test_photos.py)
 #   1. install the APK; copy the test photos to the phone, plus a screen recording and a copy of it
 #   2. scan chosen folders (the app's test extras) and check the groups it logs: only the ticked
 #      folders may be searched
 #   3. through the real buttons and the system's own dialog: move the ticked files to the trash,
 #      check they've left the media index and the kept copies haven't, then Undo and check they're back
 #   4. Android closing the app while its results are open: they must come back
-#   5. GUI exploration with monkey (15,000 events), including rotation
+#   5. with DEBUG_APK (a test build that dies on purpose while reading one photo, as a crashing
+#      decoder would): the photo must be left out by the third scan, and that scan must finish
+#   6. GUI exploration with monkey (15,000 events), including rotation
 # Fails if a check fails, or the app crashes or stops responding (ANR) at any point.
 set -u
 APK=$1
 DATA=$2
+DEBUG_APK=${3:-}
 PKG=io.github.tanay7.photocleaner
 HERE=$(cd "$(dirname "$0")" && pwd)
 FAILS=0
@@ -27,7 +30,7 @@ for i in $(seq 1 30); do
   [ "$i" = 30 ] && { echo "FAIL: APK did not install"; echo "$out" | tail -20; exit 1; }
   sleep 5
 done
-for p in READ_MEDIA_IMAGES READ_MEDIA_VIDEO POST_NOTIFICATIONS; do adb shell pm grant $PKG android.permission.$p; done
+for p in READ_MEDIA_IMAGES READ_MEDIA_VIDEO ACCESS_MEDIA_LOCATION POST_NOTIFICATIONS; do adb shell pm grant $PKG android.permission.$p; done
 
 # -- test files -------------------------------------------------------------------------------
 (cd "$DATA" && find . -type f | sed 's|^\./||') | while IFS= read -r f; do
@@ -113,9 +116,11 @@ sleep 2; shot 2-results-two-folders
 grep -q 'GROUP identical KEEP:Pictures/Copies/IMG_0001.jpg TRASH:Download/IMG_0001 (1).jpg' logcat.txt &&
   ok "the copy with a copy name goes" || fail "wrong copy kept in Pictures/Copies + Download"
 
+expect "$r" original 1            # the files' own bytes, not copies with the location blanked out
+
 echo "== only DCIM/Camera is ticked"
 r=$(scan 'DCIM/Camera'); echo "$r"
-expect "$r" photos 6
+expect "$r" photos 11
 expect "$r" groups 1
 expect "$r" bursts 1
 expect "$r" suggested 4
@@ -124,10 +129,17 @@ if grep 'GROUP bursts' logcat.txt | tail -1 | grep -q 'KEEP:DCIM/Camera/BURST_03
 else
   ok "a sharp burst frame is kept"
 fi
+# five pages of a document, photographed two seconds apart: alike in layout only
+if grep ' GROUP ' logcat.txt | grep -q 'DOC_0'; then
+  fail "pages of a document were taken for a burst or for look-alikes"
+else
+  ok "pages photographed one after the other are not a burst"
+fi
 
 echo "== everything is ticked"
 r=$(scan '*'); echo "$r"
-expect "$r" photos 17
+sleep 1   # the lines for each group follow the result
+expect "$r" photos 28
 expect "$r" videos $((2 * VIDEOS))
 expect "$r" groups $((3 + VIDEOS))
 expect "$r" lookalike 1
@@ -136,6 +148,7 @@ expect "$r" poor 1
 expect "$r" videogroups $VIDEOS
 expect "$r" undecodable 2          # the truncated photo and the text file: reported, not fatal
 expect "$r" unreadable 0
+expect "$r" quarantined 0
 [ "$(field "$r" threads)" -ge 1 ] && ok "read on $(field "$r" threads) threads, $(field "$r" cores) cores" || fail "no thread count"
 TICKED=$((8 + VIDEOS))
 expect "$r" suggested $TICKED
@@ -143,6 +156,19 @@ grep ' GROUP lookalike ' logcat.txt | tail -1 | grep -q 'KEEP:DCIM/Camera/IMG_00
   ok "the camera original is kept" || fail "the camera original isn't the kept copy"
 grep ' GROUP lookalike ' logcat.txt | tail -1 | grep -q 'TRASH:Pictures/Edited/turned.jpg' &&
   ok "the turned copy is found" || fail "the turned copy wasn't matched"
+grep ' GROUP lookalike ' logcat.txt | tail -1 | grep -q 'ASK:Pictures/Edited/brighter.jpg' &&
+  ok "the brighter edit is shown, not ticked" || fail "the brighter edit isn't an unticked look-alike"
+last=$(grep -n ' RESULT ' logcat.txt | tail -1 | cut -d: -f1)
+if tail -n +"$last" logcat.txt | grep ' GROUP ' | grep -qE 'DOC_0|settings_'; then
+  fail "different pages or screens were grouped"
+else
+  ok "different pages and screens with the same layout are not grouped"
+fi
+if tail -n +"$last" logcat.txt | grep ' GROUP poor ' | grep -q 'settings_'; then
+  fail "a white screenshot was listed as badly exposed"
+else
+  ok "screenshots are not judged as photos"
+fi
 sleep 2; shot 3-results
 
 # -- the viewer, the options and the about box --------------------------------------------------
@@ -196,6 +222,33 @@ else
   fi
 fi
 adb shell input keyevent KEYCODE_BACK; sleep 1
+
+if [ -n "$DEBUG_APK" ] && [ -f "$DEBUG_APK" ]; then
+  echo "== a photo that makes the app die is left out by the third scan"
+  adb install -r "$DEBUG_APK" >/dev/null 2>&1 || fail "the test build did not install"
+  adb shell am start -W -n $PKG/.MainActivity >/dev/null; sleep 3
+  for round in 1 2; do
+    n0=$(grep -c 'TEST dying' logcat.txt)
+    adb shell "am start -n $PKG/.MainActivity --es folders 'Pictures/CrashTest' --ez autoscan true" >/dev/null
+    for i in $(seq 1 60); do [ "$(grep -c 'TEST dying' logcat.txt)" -gt "$n0" ] && break; sleep 1; done
+    [ "$(grep -c 'TEST dying' logcat.txt)" -gt "$n0" ] && ok "scan $round: the app died while reading the photo" || fail "scan $round: the app didn't reach the photo"
+    sleep 5
+    adb shell am start -W -n $PKG/.MainActivity >/dev/null; sleep 3
+  done
+  shot 13-after-a-crash
+  r=$(scan 'Pictures/CrashTest'); echo "$r"
+  grep 'last exit' logcat.txt | tail -2
+  expect "$r" photos 3
+  expect "$r" quarantined 1
+  expect "$r" groups 0
+  [ "$(grep -c 'TEST dying' logcat.txt)" = "2" ] && ok "the photo was not read a third time" || fail "the photo was read again"
+  adb shell input keyevent KEYCODE_BACK; sleep 1
+  # the build that ships again, for the rest
+  adb install -r "$APK" >/dev/null 2>&1 || fail "the release build did not install again"
+  adb shell am start -W -n $PKG/.MainActivity >/dev/null; sleep 3
+else
+  echo "(no test build given: the crash test is skipped)"
+fi
 
 adb shell settings put system accelerometer_rotation 0
 adb shell settings put system user_rotation 1; sleep 3; shot 11-landscape

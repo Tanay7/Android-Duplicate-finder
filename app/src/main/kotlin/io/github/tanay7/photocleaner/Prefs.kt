@@ -68,30 +68,66 @@ object Prefs {
         return ScanOptions(b[0], b[1], b[2], b[3], b[4], p[5].toIntOrNull() ?: 8)
     }
 
+    // -- choices made by hand ----------------------------------------------------------------------
+
+    private var keepsCache: HashSet<String>? = null
+    private var ticksCache: HashSet<String>? = null
+
+    private fun keepsLive(ctx: Context) = keepsCache ?: (sp(ctx).getStringSet("keeps", null)?.toHashSet() ?: HashSet()).also { keepsCache = it }
+    private fun ticksLive(ctx: Context) = ticksCache ?: (sp(ctx).getStringSet("ticks", null)?.toHashSet() ?: HashSet()).also { ticksCache = it }
+
     /**
-     * Files ticked (true) or unticked (false) by hand, against the suggestion. They win over the
-     * suggestion in every later scan too, so a photo you chose to keep stays kept.
+     * Files you chose to keep although they were suggested for the trash. They are never ticked for
+     * you again, in any later scan (until the file is gone).
      */
-    fun overrides(ctx: Context): Map<String, Boolean> {
-        val out = HashMap<String, Boolean>()
-        for (e in sp(ctx).getStringSet("overrides", null) ?: emptySet()) {
-            if (e.length > 1) out[e.substring(1)] = e[0] == '+'
-        }
-        return out
+    @Synchronized fun keeps(ctx: Context): Set<String> = HashSet(keepsLive(ctx))
+
+    /**
+     * Files you ticked although they weren't suggested. Remembered for the results at hand only (so
+     * they come back if Android closes the app meanwhile), never for a later scan: an old tick must
+     * not send a file to the trash months later.
+     */
+    @Synchronized fun ticks(ctx: Context): Set<String> = HashSet(ticksLive(ctx))
+
+    /** Records choices: for each file key, true adds it to the keeps (or ticks), false takes it out. */
+    @Synchronized fun choose(ctx: Context, keep: Map<String, Boolean>, tick: Map<String, Boolean>) {
+        val keeps = keepsLive(ctx)
+        val ticks = ticksLive(ctx)
+        for ((k, on) in keep) if (!on) keeps.remove(k) else if (keeps.size < MAX_CHOICES) keeps.add(k)
+        for ((k, on) in tick) if (!on) ticks.remove(k) else if (ticks.size < MAX_CHOICES) ticks.add(k)
+        sp(ctx).edit().putStringSet("keeps", HashSet(keeps)).putStringSet("ticks", HashSet(ticks)).apply()
     }
 
-    /** Records a hand-made choice for the file [key]; null forgets it (back to the suggestion). */
-    fun setOverrides(ctx: Context, changes: Map<String, Boolean?>) {
-        val now = overrides(ctx).toMutableMap()
-        for ((k, v) in changes) if (v == null) now.remove(k) else now[k] = v
-        val set = LinkedHashSet<String>()
-        for ((k, v) in now.entries.toList().takeLast(MAX_OVERRIDES)) set.add((if (v) "+" else "-") + k)
-        sp(ctx).edit().putStringSet("overrides", set).apply()
+    /** A new scan starts: the ticks made in the last results don't carry over. */
+    @Synchronized fun clearTicks(ctx: Context) {
+        if (ticksLive(ctx).isEmpty()) return
+        ticksCache = HashSet()
+        sp(ctx).edit().remove("ticks").apply()
     }
 
-    private const val MAX_OVERRIDES = 5000
+    /** Forgets the keeps of files that are gone, so the list doesn't grow forever. */
+    @Synchronized fun pruneKeeps(ctx: Context, live: Set<String>) {
+        val keeps = keepsLive(ctx)
+        if (!keeps.retainAll(live)) return
+        sp(ctx).edit().putStringSet("keeps", HashSet(keeps)).apply()
+    }
 
+    private const val MAX_CHOICES = 20_000
+
+    /** Files that were being read when the app died: the next scan reads them one at a time. */
+    fun suspects(ctx: Context): Set<String> = sp(ctx).getStringSet("suspects", null)?.toHashSet() ?: emptySet()
+
+    fun setSuspects(ctx: Context, keys: Set<String>) {
+        if (keys.isEmpty() && !sp(ctx).contains("suspects")) return
+        sp(ctx).edit().putStringSet("suspects", HashSet(keys)).apply()
+    }
+
+    /** Asked once each, before the first scan: notifications, and (after an update) the photos' own bytes. */
     var Context.askedNotifications: Boolean
         get() = sp(this).getBoolean("askedNotifications", false)
         set(v) = sp(this).edit().putBoolean("askedNotifications", v).apply()
+
+    var Context.askedOriginals: Boolean
+        get() = sp(this).getBoolean("askedOriginals", false)
+        set(v) = sp(this).edit().putBoolean("askedOriginals", v).apply()
 }

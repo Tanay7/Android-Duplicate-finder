@@ -43,6 +43,79 @@ object Scenes {
 
     fun uniform(v: Int, w: Int = 400, h: Int = 300) = Pic(w, h, IntArray(w * h) { argb(v, v, v) })
 
+    private fun rect(px: IntArray, w: Int, h: Int, x0: Int, y0: Int, x1: Int, y1: Int, c: Int) {
+        for (y in max(0, y0) until min(h, y1)) for (x in max(0, x0) until min(w, x1)) px[y * w + x] = c
+    }
+
+    /**
+     * A photographed page of "text": paragraphs of grey words on white paper, a heading now and then,
+     * unevenly lit. Any two pages share their layout (margins, line spacing) and nothing else: what a
+     * 64-bit pHash, which only sees the layout, confuses.
+     */
+    fun page(seed: Int, w: Int = 724, h: Int = 1024): Pic {
+        val rnd = Random(seed)
+        val px = IntArray(w * h) { argb(252, 252, 250) }
+        val left = w * 9 / 100
+        val right = w - left
+        val pitch = h * 19 / 1000
+        var y = h * 7 / 100
+        while (y < h - h * 9 / 100) {
+            if (rnd.nextInt(4) == 0) {
+                rect(px, w, h, left, y, left + (right - left) * (20 + rnd.nextInt(40)) / 100, y + pitch, argb(60, 60, 60))
+                y += pitch * 2
+            }
+            val lines = 2 + rnd.nextInt(8)
+            for (l in 0 until lines) {
+                if (y > h - h * 9 / 100) break
+                val end = left + (right - left) * (if (l == lines - 1) 30 + rnd.nextInt(60) else 88 + rnd.nextInt(13)) / 100
+                var x = left
+                while (x < end) {
+                    val word = 8 + rnd.nextInt(34)
+                    rect(px, w, h, x, y, min(end, x + word), y + pitch * 55 / 100, argb(120, 120, 120))
+                    x += word + 5
+                }
+                y += pitch
+            }
+            y += pitch * (7 + rnd.nextInt(10)) / 10
+        }
+        val gx0 = 0.85 + rnd.nextDouble() * 0.15
+        val gx1 = 0.85 + rnd.nextDouble() * 0.15
+        val gy0 = 0.85 + rnd.nextDouble() * 0.15
+        val gy1 = 0.85 + rnd.nextDouble() * 0.15
+        for (yy in 0 until h) for (xx in 0 until w) {
+            val f = (gx0 + (gx1 - gx0) * xx / w) * (gy0 + (gy1 - gy0) * yy / h)
+            val c = px[yy * w + xx]
+            px[yy * w + xx] = channelMap { ch -> (comp(c, ch) * f).roundToInt() }
+        }
+        return Pic(w, h, px)
+    }
+
+    /** A phone screen of settings: a title, then rows of a coloured icon and two lines, some with a switch. */
+    fun screen(seed: Int, w: Int = 460, h: Int = 1024): Pic {
+        val rnd = Random(seed)
+        val px = IntArray(w * h) { argb(250, 250, 252) }
+        rect(px, w, h, w * 6 / 100, h * 8 / 100, w * (30 + rnd.nextInt(40)) / 100, h * 11 / 100, argb(40, 40, 40))
+        var y = h * 17 / 100
+        while (y < h - h * 8 / 100) {
+            val icon = argb(60 + rnd.nextInt(160), 60 + rnd.nextInt(160), 60 + rnd.nextInt(160))
+            val cx = w * 10 / 100
+            val r = w * 4 / 100
+            for (yy in y until y + 2 * r) for (xx in cx - r until cx + r) {
+                val dx = xx - cx
+                val dy = yy - (y + r)
+                if (dx * dx + dy * dy <= r * r && yy in 0 until h && xx in 0 until w) px[yy * w + xx] = icon
+            }
+            rect(px, w, h, w * 18 / 100, y + r / 3, w * (30 + rnd.nextInt(35)) / 100, y + r, argb(70, 70, 70))
+            rect(px, w, h, w * 18 / 100, y + r * 4 / 3, w * (35 + rnd.nextInt(45)) / 100, y + r * 11 / 6, argb(150, 150, 150))
+            if (rnd.nextInt(10) < 3) rect(px, w, h, w * 82 / 100, y + r / 2, w * 93 / 100, y + r * 3 / 2, argb(60, 110, 220))
+            y += h * (62 + rnd.nextInt(22)) / 1000
+        }
+        return Pic(w, h, px)
+    }
+
+    /** Contrast changed around the middle grey. */
+    fun contrast(p: Pic, f: Double) = Pic(p.w, p.h, IntArray(p.px.size) { i -> channelMap { ch -> (128 + (comp(p.px[i], ch) - 128) * f).roundToInt() } })
+
     /** Bilinear resize. */
     fun resize(p: Pic, tw: Int, th: Int): Pic {
         val out = IntArray(tw * th)

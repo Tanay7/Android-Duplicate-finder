@@ -79,7 +79,11 @@ object MediaIndex {
         val uri = MediaItem.collection(kind, MediaStore.VOLUME_EXTERNAL)
         ctx.contentResolver.query(uri, projection, null, null, null)?.use { c ->
             val col = projection.associateWith { c.getColumnIndexOrThrow(it) }
+            // Thousands of files share a few folders, volumes and types: one string for each, not one per file.
+            val shared = HashMap<String, String>()
+            val folders = HashMap<String, String>()
             fun str(name: String) = c.getString(col.getValue(name)) ?: ""
+            fun one(name: String) = str(name).let { shared.getOrPut(it) { it } }
             fun long(name: String) = if (c.isNull(col.getValue(name))) 0L else c.getLong(col.getValue(name))
             while (c.moveToNext()) {
                 // A file Android hasn't finished indexing can still say 0 bytes: it is listed all the
@@ -89,9 +93,9 @@ object MediaIndex {
                     MediaItem(
                         kind = kind,
                         id = long(MediaStore.MediaColumns._ID),
-                        volume = str(MediaStore.MediaColumns.VOLUME_NAME).ifEmpty { MediaStore.VOLUME_EXTERNAL_PRIMARY },
+                        volume = one(MediaStore.MediaColumns.VOLUME_NAME).ifEmpty { MediaStore.VOLUME_EXTERNAL_PRIMARY },
                         name = str(MediaStore.MediaColumns.DISPLAY_NAME),
-                        folder = str(MediaStore.MediaColumns.RELATIVE_PATH).trim('/'),
+                        folder = str(MediaStore.MediaColumns.RELATIVE_PATH).let { raw -> folders.getOrPut(raw) { raw.trim('/') } },
                         size = size,
                         modified = long(MediaStore.MediaColumns.DATE_MODIFIED),
                         added = long(MediaStore.MediaColumns.DATE_ADDED),
@@ -99,7 +103,7 @@ object MediaIndex {
                         width = long(MediaStore.MediaColumns.WIDTH).toInt(),
                         height = long(MediaStore.MediaColumns.HEIGHT).toInt(),
                         orientation = long(MediaStore.MediaColumns.ORIENTATION).toInt(),
-                        mime = str(MediaStore.MediaColumns.MIME_TYPE),
+                        mime = one(MediaStore.MediaColumns.MIME_TYPE),
                         durationMs = if (kind == MediaKind.VIDEO) long(MediaStore.Video.VideoColumns.DURATION) else 0L,
                         favorite = long(MediaStore.MediaColumns.IS_FAVORITE) != 0L,
                     ),
@@ -111,37 +115,70 @@ object MediaIndex {
     /**
      * The keys of those [items] still on the phone (not deleted, not in the trash). Checked before
      * moving files and after Android answers, so the app never acts on, or reports, a file that has
-     * gone meanwhile.
+     * gone meanwhile. Files on a storage that can't be asked (an SD card taken out) count as gone.
      */
     fun existing(ctx: Context, items: Collection<MediaItem>): Set<String> {
         val out = HashSet<String>()
         for ((where, list) in items.groupBy { it.kind to it.volume }) {
-            val uri = MediaItem.collection(where.first, where.second)
-            for (chunk in list.chunked(400)) {
-                val byId = chunk.associateBy { it.id }
-                val sel = "${MediaStore.MediaColumns._ID} IN (${chunk.joinToString(",") { it.id.toString() }})"
-                ctx.contentResolver.query(uri, arrayOf(MediaStore.MediaColumns._ID), sel, null, null)?.use { c ->
-                    while (c.moveToNext()) byId[c.getLong(0)]?.let { out.add(it.key) }
+            try {
+                val uri = MediaItem.collection(where.first, where.second)
+                for (chunk in list.chunked(400)) {
+                    val byId = chunk.associateBy { it.id }
+                    val sel = "${MediaStore.MediaColumns._ID} IN (${chunk.joinToString(",") { it.id.toString() }})"
+                    ctx.contentResolver.query(uri, arrayOf(MediaStore.MediaColumns._ID), sel, null, null)?.use { c ->
+                        while (c.moveToNext()) byId[c.getLong(0)]?.let { out.add(it.key) }
+                    }
                 }
+            } catch (e: Exception) {
+                android.util.Log.w("PhotoCleaner", "Can't ask the storage ${where.second}", e)
             }
         }
         return out
     }
 
-    /** One entry per folder that directly holds photos or videos, with its counts and size. */
-    fun folders(items: List<MediaItem>): List<FolderInfo> {
+    /**
+     * One entry per folder that directly holds photos or videos, with its counts and size: what the
+     * folder list shows. Reads three columns and builds nothing per file, so it stays quick for a
+     * hundred thousand photos.
+     */
+    fun folders(ctx: Context): List<FolderInfo> {
         class Acc(val volume: String, val path: String) {
             var photos = 0
             var videos = 0
             var bytes = 0L
         }
         val map = LinkedHashMap<String, Acc>()
-        for (m in items) {
-            val a = map.getOrPut(m.folderKey) { Acc(m.volume, m.folder) }
-            if (m.kind == MediaKind.PHOTO) a.photos++ else a.videos++
-            a.bytes += m.size
+        val projection = arrayOf(MediaStore.MediaColumns.VOLUME_NAME, MediaStore.MediaColumns.RELATIVE_PATH, MediaStore.MediaColumns.SIZE)
+        for (kind in MediaKind.entries) {
+            ctx.contentResolver.query(MediaItem.collection(kind, MediaStore.VOLUME_EXTERNAL), projection, null, null, null)?.use { c ->
+                var lastVolume = ""
+                var lastPath = ""
+                var last: Acc? = null
+                while (c.moveToNext()) {
+                    val volume = (c.getString(0) ?: "").ifEmpty { MediaStore.VOLUME_EXTERNAL_PRIMARY }
+                    val path = c.getString(1) ?: ""
+                    // Rows of one folder mostly come one after the other: no look-up for those.
+                    val a = if (last != null && path == lastPath && volume == lastVolume) last else {
+                        val folder = path.trim('/')
+                        map.getOrPut(FolderInfo.keyOf(volume, folder)) { Acc(volume, folder) }.also {
+                            last = it
+                            lastVolume = volume
+                            lastPath = path
+                        }
+                    }
+                    if (kind == MediaKind.PHOTO) a.photos++ else a.videos++
+                    if (!c.isNull(2)) a.bytes += c.getLong(2)
+                }
+            }
         }
         return map.values.map { FolderInfo(it.volume, it.path, it.photos, it.videos, it.bytes) }
+    }
+
+    /** The storage volumes that are in the phone right now ("external_primary", an SD card's id). */
+    fun volumes(ctx: Context): Set<String> = try {
+        MediaStore.getExternalVolumeNames(ctx)
+    } catch (_: Exception) {
+        setOf(MediaStore.VOLUME_EXTERNAL_PRIMARY)
     }
 
     /** "Phone" for the built-in storage, the system's own name (such as "SanDisk SD card") for the others. */

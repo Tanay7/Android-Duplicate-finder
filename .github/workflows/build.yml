@@ -17,8 +17,8 @@ jobs:
         with:
           distribution: temurin
           java-version: 21
-      - name: Unit tests, lint and minified release APK
-        run: ./gradlew --no-daemon testDebugUnitTest lintDebug assembleRelease
+      - name: Unit tests, lint, the minified release APK and a test build
+        run: ./gradlew --no-daemon testDebugUnitTest lintDebug assembleRelease assembleDebug
       - name: Test report (failures in full)
         if: failure()
         run: |
@@ -31,12 +31,15 @@ jobs:
           grep -E ": Error: " $f || echo "no lint errors"
           echo "warnings: $(grep -cE ': Warning: ' $f)"; grep -E ': Warning: ' $f | sed -E 's/.*\[(\w+)\]$/\1/' | sort | uniq -c | sort -rn
       - name: APK size
-        run: ls -l app/build/outputs/apk/release/
+        run: |
+          ls -l app/build/outputs/apk/release/
+          # the test build goes along for the device tests only (it is never published)
+          mkdir -p out && cp app/build/outputs/apk/release/app-release.apk app/build/outputs/apk/debug/app-debug.apk out/
       - uses: actions/upload-artifact@v4
         continue-on-error: true # a full artifact store must not stop the build; the device tests fall back to release/
         with:
           name: PhotoCleaner-apk
-          path: app/build/outputs/apk/release/*.apk
+          path: out/*.apk
           retention-days: 3
       - name: Publish APK to release/ in the repo
         run: bash scripts/publish.sh "Update release/PhotoCleaner.apk [skip ci]" app/build/outputs/apk/release/app-release.apk release/PhotoCleaner.apk
@@ -63,7 +66,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Test photos (copies, look-alikes, a burst, a dark shot)
+      - name: Test photos (copies, look-alikes, a burst, document pages, screens, broken files)
         run: |
           python -m pip install --quiet pillow
           python scripts/make_test_photos.py testdata
@@ -95,7 +98,7 @@ jobs:
           disk-size: 6144M
           emulator-boot-timeout: 1500
           emulator-options: -no-window -no-snapshot -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
-          script: bash scripts/device-test.sh apk/app-release.apk testdata
+          script: bash scripts/device-test.sh apk/app-release.apk testdata apk/app-debug.apk
       - name: Publish screenshots to docs/screenshots (Android 16 run)
         if: always() && matrix.api == 36
         run: |

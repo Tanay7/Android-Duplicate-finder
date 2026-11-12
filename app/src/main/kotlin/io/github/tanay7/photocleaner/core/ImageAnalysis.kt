@@ -23,12 +23,23 @@ class ImageFeatures(
     val variants: LongArray,
     /** pHash of the centre square (wide or tall photos) or of the central 80 % (squarish ones). */
     val cropHash: Long,
+    /**
+     * 255-bit fingerprint of finer detail: the signs of the 16x16 lowest frequencies of the same DCT
+     * (4 longs). Two different text pages or app screens can share the 64 bits of [phash], which only
+     * see the layout; they don't share these. Every look-alike and burst frame must pass it too.
+     */
+    val fine: LongArray,
+    /** The same fingerprint of the centre crop that [cropHash] describes. */
+    val cropFine: LongArray,
     /** A featureless picture (a blank page, a black frame): never matched on its looks. */
     val flat: Boolean,
     /** Average colour (YCbCr chroma) and how colourful the photo is. */
     val cb: Float,
     val cr: Float,
     val saturation: Float,
+    /** Mean brightness and contrast (standard deviation of the brightness), 0-255: an edit changes them, a re-save doesn't. */
+    val mean: Float,
+    val contrast: Float,
     /** 0 (blurry) to 100 (sharp); NaN when the photo is too small to measure. */
     val sharpness: Float,
     /** Laplacian detail of the 4 sharpest of 16 tiles: ranks the frames of a burst. */
@@ -72,6 +83,9 @@ object ImageAnalysis {
     const val HASH_BITS = 64
     /** Rows of pixels fetched at a time. */
     const val ROW_BLOCK = 32
+    /** The fine fingerprint covers the FINE x FINE lowest frequencies, less the first: 255 bits. */
+    private const val FINE = 16
+    const val FINE_BITS = FINE * FINE - 1
     private const val FLAT_STD = 2.0
 
     /**
@@ -86,6 +100,8 @@ object ImageAnalysis {
         var sumCb = 0.0
         var sumCr = 0.0
         var sumSat = 0.0
+        var sumY = 0L
+        var sumY2 = 0L
         var y0 = 0
         while (y0 < h) {
             val count = min(ROW_BLOCK, h - y0)
@@ -103,7 +119,10 @@ object ImageAnalysis {
                     g = (g * a + 255 * (255 - a) + 127) / 255
                     b = (b * a + 255 * (255 - a) + 127) / 255
                 }
-                gray[base + i] = (r * 19595 + g * 38470 + b * 7471 + 0x8000) shr 16   // ITU-R 601 luma, like PIL's "L"
+                val luma = (r * 19595 + g * 38470 + b * 7471 + 0x8000) shr 16   // ITU-R 601 luma, like PIL's "L"
+                gray[base + i] = luma
+                sumY += luma
+                sumY2 += luma * luma
                 val cb = 128.0 - 0.168736 * r - 0.331264 * g + 0.5 * b
                 val cr = 128.0 + 0.5 * r - 0.418688 * g - 0.081312 * b
                 sumCb += cb
@@ -114,16 +133,22 @@ object ImageAnalysis {
         }
         val n = w * h
         val ph = phash(gray, w, h, s = s)
+        val crop = centreCrop(gray, w, h, s)
         val blur = Sharpness.measure(gray, w, h, s)
         val exp = exposure(gray, n, s.hist)
+        val mean = sumY.toDouble() / n
         return ImageFeatures(
             phash = ph.hash,
             variants = ph.variants,
-            cropHash = centreCropHash(gray, w, h, s),
+            cropHash = crop.hash,
+            fine = ph.fine,
+            cropFine = crop.fine,
             flat = isFlat(ph.hash, ph.std) || min(w, h) < 8,
             cb = (sumCb / n).toFloat(),
             cr = (sumCr / n).toFloat(),
             saturation = (sumSat / n).toFloat(),
+            mean = mean.toFloat(),
+            contrast = sqrt(max(0.0, sumY2.toDouble() / n - mean * mean)).toFloat(),
             sharpness = blur.score,
             detail = blur.detail,
             median = exp[0],
@@ -138,7 +163,7 @@ object ImageAnalysis {
         return analyze(w, h, s) { y0, count, out -> System.arraycopy(argb, y0 * w, out, 0, count * w) }
     }
 
-    class PHash(val hash: Long, val std: Double, val variants: LongArray)
+    class PHash(val hash: Long, val std: Double, val variants: LongArray, val fine: LongArray)
 
     /** pHash of the region (x0, y0, cw, ch) of a grey image, plus its turned and mirrored variants. */
     fun phash(gray: IntArray, w: Int, h: Int, x0: Int = 0, y0: Int = 0, cw: Int = w, ch: Int = h, s: Scratch = Scratch()): PHash {
@@ -152,9 +177,10 @@ object ImageAnalysis {
         for (v in x) sq += (v - mean) * (v - mean)
         val std = sqrt(sq / x.size)
 
-        // low = C · X · Cᵀ, first 8x8 coefficients of the unnormalised DCT-II.
-        val t = DoubleArray(8 * 32)
-        for (k in 0 until 8) {
+        // C · X · Cᵀ: the 16x16 lowest frequencies of the unnormalised DCT-II. The pHash uses the
+        // first 8x8 of them, the fine fingerprint the signs of all (but the first, the brightness).
+        val t = DoubleArray(FINE * 32)
+        for (k in 0 until FINE) {
             for (m in 0 until 32) {
                 val c = DCT[k * 32 + m]
                 val row = m * 32
@@ -162,14 +188,17 @@ object ImageAnalysis {
                 for (col in 0 until 32) t[out + col] += c * x[row + col]
             }
         }
-        val low = DoubleArray(64)
-        for (k in 0 until 8) {
-            for (l in 0 until 8) {
+        val low16 = DoubleArray(FINE * FINE)
+        for (k in 0 until FINE) {
+            for (l in 0 until FINE) {
                 var sum = 0.0
                 for (col in 0 until 32) sum += t[k * 32 + col] * DCT[l * 32 + col]
-                low[k * 8 + l] = sum
+                low16[k * FINE + l] = sum
             }
         }
+        val low = DoubleArray(64) { low16[(it / 8) * FINE + it % 8] }
+        val fine = LongArray(4)
+        for (b in 1 until FINE * FINE) if (low16[b] > 0.0) fine[b ushr 6] = fine[b ushr 6] or (1L shl (b and 63))
         // A flip or a quarter turn only swaps axes and changes signs in the DCT, so every variant
         // comes from this one transform.
         val v = LongArray(4)
@@ -182,12 +211,46 @@ object ImageAnalysis {
         v[2] = bits64(tmp)
         for (i in 0 until 8) for (j in 0 until 8) tmp[i * 8 + j] = low[i * 8 + j] * sign(j)
         v[3] = bits64(tmp)
-        return PHash(bits64(low), std, v)
+        return PHash(bits64(low), std, v, fine)
     }
+
+    /**
+     * The fine fingerprint the same picture has when turned a quarter one way (0), half (1), a quarter
+     * the other way (2) or mirrored (3): a turn or flip only swaps the axes of the DCT and changes the
+     * signs of its odd rows or columns, so it comes from the stored bits (in the order of
+     * [ImageFeatures.variants]).
+     */
+    fun fineVariant(f: LongArray, variant: Int): LongArray {
+        val out = LongArray(4)
+        for (i in 0 until FINE) {
+            for (j in 0 until FINE) {
+                if (i == 0 && j == 0) continue
+                val src = if (variant == 0 || variant == 2) j * FINE + i else i * FINE + j
+                val flip = when (variant) {
+                    0 -> j
+                    1 -> i + j
+                    2 -> i
+                    else -> j
+                } and 1
+                val bit = ((f[src ushr 6] ushr (src and 63)) and 1L) xor flip.toLong()
+                val b = i * FINE + j
+                if (bit != 0L) out[b ushr 6] = out[b ushr 6] or (1L shl (b and 63))
+            }
+        }
+        return out
+    }
+
+    /** How many of the 255 fine bits differ. */
+    fun fineDistance(a: LongArray, b: LongArray): Int =
+        java.lang.Long.bitCount(a[0] xor b[0]) + java.lang.Long.bitCount(a[1] xor b[1]) +
+            java.lang.Long.bitCount(a[2] xor b[2]) + java.lang.Long.bitCount(a[3] xor b[3])
+
+    /** The share of the fine bits that agree, in %: what a look-alike is shown with. */
+    fun fineScore(bits: Int): Float = (FINE_BITS - bits) * 100f / FINE_BITS
 
     private fun sign(i: Int) = if (i % 2 == 0) 1.0 else -1.0
 
-    private val DCT = DoubleArray(8 * 32) { idx ->
+    private val DCT = DoubleArray(FINE * 32) { idx ->
         val k = idx / 32
         val m = idx % 32
         cos(PI * k * (2 * m + 1) / 64.0)
@@ -208,13 +271,13 @@ object ImageAnalysis {
         return std < FLAT_STD || ones < 8 || ones > 56
     }
 
-    /** pHash of the centre square (wide or tall photos) or of the central 80 % (squarish ones). */
-    fun centreCropHash(gray: IntArray, w: Int, h: Int, s: Scratch = Scratch()): Long {
+    /** The hashes of the centre square (wide or tall photos) or of the central 80 % (squarish ones). */
+    fun centreCrop(gray: IntArray, w: Int, h: Int, s: Scratch = Scratch()): PHash {
         return if (max(w, h) > 1.15 * min(w, h)) {
             val side = min(w, h)
-            phash(gray, w, h, (w - side) / 2, (h - side) / 2, side, side, s).hash
+            phash(gray, w, h, (w - side) / 2, (h - side) / 2, side, side, s)
         } else {
-            phash(gray, w, h, w / 10, h / 10, w - 2 * (w / 10), h - 2 * (h / 10), s).hash
+            phash(gray, w, h, w / 10, h / 10, w - 2 * (w / 10), h - 2 * (h / 10), s)
         }
     }
 

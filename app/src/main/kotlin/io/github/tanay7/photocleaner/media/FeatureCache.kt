@@ -23,9 +23,16 @@ class FeatureRow(
     /** Null when only the fingerprint was needed, or the photo couldn't be decoded. */
     val features: ImageFeatures?,
     val error: String?,
+    /**
+     * Read from the file's own bytes (true), or from the copy Android hands out with the place a
+     * photo was taken blanked out (false: the app lacks the media-location permission). The two give
+     * different fingerprints for the same file, so they are never compared with each other.
+     */
+    val original: Boolean = true,
 ) {
-    /** Still describes the file: same size, not changed since, and computed by this version. */
-    fun matches(m: MediaItem) = size == m.size && modified == m.modified
+    /** Still describes the file: same size, not changed since, read the same way. */
+    fun matches(m: MediaItem, original: Boolean) =
+        size == m.size && modified == m.modified && this.original == original && m.size > 0
 }
 
 /**
@@ -42,8 +49,10 @@ class FeatureCache(private val ctx: Context) : SQLiteOpenHelper(ctx, NAME, null,
             """CREATE TABLE features (
                 key TEXT PRIMARY KEY, size INTEGER, modified INTEGER, sha TEXT, w INTEGER, h INTEGER,
                 taken REAL, camera TEXT, analysed INTEGER, phash INTEGER, v0 INTEGER, v1 INTEGER, v2 INTEGER,
-                v3 INTEGER, crop INTEGER, flat INTEGER, cb REAL, cr REAL, sat REAL, sharp REAL, detail REAL,
-                med REAL, black REAL, white REAL, error TEXT)""",
+                v3 INTEGER, crop INTEGER, f0 INTEGER, f1 INTEGER, f2 INTEGER, f3 INTEGER, c0 INTEGER,
+                c1 INTEGER, c2 INTEGER, c3 INTEGER, flat INTEGER, cb REAL, cr REAL, sat REAL, mean REAL,
+                contrast REAL, sharp REAL, detail REAL, med REAL, black REAL, white REAL, error TEXT,
+                orig INTEGER)""",
         )
     }
 
@@ -76,10 +85,14 @@ class FeatureCache(private val ctx: Context) : SQLiteOpenHelper(ctx, NAME, null,
                         phash = c.getLong(i("phash")),
                         variants = longArrayOf(c.getLong(i("v0")), c.getLong(i("v1")), c.getLong(i("v2")), c.getLong(i("v3"))),
                         cropHash = c.getLong(i("crop")),
+                        fine = longArrayOf(c.getLong(i("f0")), c.getLong(i("f1")), c.getLong(i("f2")), c.getLong(i("f3"))),
+                        cropFine = longArrayOf(c.getLong(i("c0")), c.getLong(i("c1")), c.getLong(i("c2")), c.getLong(i("c3"))),
                         flat = c.getInt(i("flat")) != 0,
                         cb = flt("cb"),
                         cr = flt("cr"),
                         saturation = flt("sat"),
+                        mean = flt("mean"),
+                        contrast = flt("contrast"),
                         sharpness = flt("sharp"),
                         detail = flt("detail"),
                         median = flt("med"),
@@ -101,6 +114,7 @@ class FeatureCache(private val ctx: Context) : SQLiteOpenHelper(ctx, NAME, null,
                     camera = c.getString(i("camera")),
                     features = features,
                     error = c.getString(i("error")),
+                    original = c.getInt(i("orig")) != 0,
                 )
             }
         }
@@ -131,6 +145,7 @@ class FeatureCache(private val ctx: Context) : SQLiteOpenHelper(ctx, NAME, null,
                 v.put("taken", r.takenAt)
                 v.put("camera", r.camera)
                 v.put("error", r.error)
+                v.put("orig", if (r.original) 1 else 0)
                 val f = r.features
                 v.put("analysed", if (f != null) 1 else 0)
                 if (f != null) {
@@ -140,10 +155,16 @@ class FeatureCache(private val ctx: Context) : SQLiteOpenHelper(ctx, NAME, null,
                     v.put("v2", f.variants[2])
                     v.put("v3", f.variants[3])
                     v.put("crop", f.cropHash)
+                    for (k in 0 until 4) {
+                        v.put("f$k", f.fine[k])
+                        v.put("c$k", f.cropFine[k])
+                    }
                     v.put("flat", if (f.flat) 1 else 0)
                     v.put("cb", f.cb)
                     v.put("cr", f.cr)
                     v.put("sat", f.saturation)
+                    v.put("mean", f.mean)
+                    v.put("contrast", f.contrast)
                     if (f.sharpness.isNaN()) v.putNull("sharp") else v.put("sharp", f.sharpness)
                     v.put("detail", f.detail)
                     v.put("med", f.median)
@@ -158,9 +179,12 @@ class FeatureCache(private val ctx: Context) : SQLiteOpenHelper(ctx, NAME, null,
         }
     }
 
-    /** Forgets files that no longer exist, so the cache doesn't grow forever. */
-    fun prune(liveKeys: Set<String>, known: Collection<String>) {
-        val gone = known.filter { it !in liveKeys }
+    /**
+     * Forgets files that no longer exist, so the cache doesn't grow forever. Only on the [volumes]
+     * that are in the phone: what is known about an SD card stays while the card is out.
+     */
+    fun prune(liveKeys: Set<String>, known: Collection<String>, volumes: Set<String>) {
+        val gone = known.filter { it !in liveKeys && it.substringBefore('/') in volumes }
         if (gone.isEmpty()) return
         try {
             val db = writableDatabase
@@ -188,7 +212,7 @@ class FeatureCache(private val ctx: Context) : SQLiteOpenHelper(ctx, NAME, null,
 
     companion object {
         /** Raising this recomputes every cached fingerprint (the database version). */
-        const val ALGO = 1
+        const val ALGO = 2
         private const val NAME = "features.db"
         private const val TAG = "PhotoCleaner"
     }

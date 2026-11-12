@@ -125,3 +125,119 @@ class ParallelismTest {
         assertEquals(1, Parallelism.allowed(1, 3))
     }
 }
+
+class BudgetAndJournalTest {
+    @Test fun decodingNeedsFollowTheFormat() {
+        val mb = 1L shl 20
+        // a 12-megapixel JPEG is decoded at half size
+        assertEquals(12_000_000L / 4 * 4 + 4 * mb, Parallelism.decodeBytes("image/jpeg", "a.jpg", 4000, 3000))
+        // HEIC is decoded whole, RAW developed whole
+        assertTrue(Parallelism.decodeBytes("image/heic", "a.heic", 8160, 6120) > 290 * mb)
+        assertTrue(Parallelism.decodeBytes("image/x-adobe-dng", "a.dng", 4000, 3000) > 270 * mb)
+        assertTrue(Parallelism.decodeBytes("image/jpeg", "a.DNG", 4000, 3000) > 270 * mb)
+        // unknown size: as 12 megapixels
+        assertEquals(Parallelism.decodeBytes("image/jpeg", "a.jpg", 4000, 3000), Parallelism.decodeBytes("image/jpeg", "a.jpg", 0, 0))
+        assertTrue(Parallelism.decodeBytes("image/png", "s.png", 1080, 2400) < 16 * mb)
+    }
+
+    @Test fun budgetNeverGivesOutMoreThanThereIs() {
+        val budget = Budget(100)
+        val inUse = java.util.concurrent.atomic.AtomicLong()
+        val worst = java.util.concurrent.atomic.AtomicLong()
+        val bigRan = java.util.concurrent.atomic.AtomicBoolean()
+        val threads = (0 until 8).map { t ->
+            kotlin.concurrent.thread {
+                val rnd = kotlin.random.Random(t)
+                repeat(60) { k ->
+                    // thread 0 asks for more than the whole budget now and then: it must get its turn, alone
+                    val need = if (t == 0 && k % 20 == 5) 500L else 5L + rnd.nextInt(40)
+                    val got = budget.acquire(need)
+                    val now = inUse.addAndGet(got)
+                    worst.accumulateAndGet(now) { a, b -> maxOf(a, b) }
+                    if (need == 500L) {
+                        assertEquals(100L, got)
+                        assertEquals(100L, now)
+                        bigRan.set(true)
+                    }
+                    Thread.sleep(1)
+                    inUse.addAndGet(-got)
+                    budget.release(got)
+                }
+            }
+        }
+        threads.forEach { it.join(20_000) }
+        assertTrue(threads.none { it.isAlive })
+        assertTrue(worst.get() in 1..100)
+        assertTrue(bigRan.get())
+    }
+
+    @Test fun waitingForTheBudgetCanBeStopped() {
+        val budget = Budget(10)
+        val held = budget.acquire(10)
+        val stop = java.util.concurrent.atomic.AtomicBoolean()
+        var stopped = false
+        val waiter = kotlin.concurrent.thread {
+            try {
+                budget.acquire(5) { stop.get() }
+            } catch (_: java.util.concurrent.CancellationException) {
+                stopped = true
+            }
+        }
+        Thread.sleep(150)
+        assertTrue(waiter.isAlive)
+        stop.set(true)
+        waiter.join(5_000)
+        assertTrue(stopped)
+        // the one who left doesn't block those behind it
+        budget.release(held)
+        assertEquals(7L, budget.acquire(7))
+    }
+
+    @Test fun journalRemembersWhatWasInFlightWhenTheAppDied() {
+        val file = java.io.File.createTempFile("journal", ".bin")
+        try {
+            assertTrue(Journal.read(file).isEmpty)
+            val j = Journal.open(file)!!
+            j.begin(0, "external_primary/i/11", alone = false)
+            j.begin(1, "external_primary/i/12", alone = false)
+            j.begin(3, "1a2b-3c4d/i/99", alone = false)
+            j.end(1)
+            // the app dies here: nothing is closed
+            var left = Journal.read(file)
+            assertEquals(setOf("external_primary/i/11", "1a2b-3c4d/i/99"), left.together)
+            assertTrue(left.alone.isEmpty())
+
+            // the next run reads the suspects one at a time, and dies on one of them
+            val j2 = Journal.open(file)!!
+            assertTrue(Journal.read(file).isEmpty)
+            j2.begin(0, "external_primary/i/11", alone = true)
+            j2.end(0)
+            j2.begin(0, "1a2b-3c4d/i/99", alone = true)
+            left = Journal.read(file)
+            assertEquals(setOf("1a2b-3c4d/i/99"), left.alone)
+            assertTrue(left.together.isEmpty())
+
+            // a run that ends in order leaves nothing
+            val j3 = Journal.open(file)!!
+            j3.begin(2, "external_primary/v/5", alone = false)
+            j3.end(2)
+            j3.close()
+            assertTrue(Journal.read(file).isEmpty)
+            // a key too long for a slot is simply not noted
+            val j4 = Journal.open(file)!!
+            j4.begin(0, "x".repeat(300), alone = true)
+            assertTrue(Journal.read(file).isEmpty)
+            j4.close()
+        } finally {
+            file.delete()
+        }
+        // rubbish in the file is not a suspect
+        val junk = java.io.File.createTempFile("journal", ".bin")
+        try {
+            junk.writeBytes(ByteArray(400) { 7 })
+            assertTrue(Journal.read(junk).isEmpty)
+        } finally {
+            junk.delete()
+        }
+    }
+}

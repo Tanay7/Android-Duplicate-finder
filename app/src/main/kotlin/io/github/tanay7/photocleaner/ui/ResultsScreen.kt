@@ -33,12 +33,16 @@ import kotlin.math.roundToInt
 
 /** Words for groups and their members, shared by the results, the grid and the viewer. */
 object Words {
-    fun groupTitle(g: Group, live: Int): String = when {
-        g.type == GroupType.POOR -> Fmt.plural(live, "blurry or dark photo", "blurry or dark photos")
-        g.kind == MediaKind.VIDEO -> "$live identical videos"
-        g.type == GroupType.BURST -> "Burst · ${Fmt.plural(live, "shot", "shots")}"
-        g.type == GroupType.IDENTICAL -> "$live identical copies"
-        else -> "$live look-alike photos"
+    fun groupTitle(g: Group, live: List<Member>): String = when {
+        g.type == GroupType.POOR -> Fmt.plural(live.size, "blurry or dark photo", "blurry or dark photos")
+        g.kind == MediaKind.VIDEO -> "${live.size} identical videos"
+        g.type == GroupType.BURST -> {
+            // The shots of the burst, and any copies of them that were found as well.
+            val shots = live.count { it.frame }
+            "Burst · ${Fmt.plural(shots, "shot", "shots")}" + if (live.size > shots) " and ${Fmt.plural(live.size - shots, "copy", "copies")}" else ""
+        }
+        g.type == GroupType.IDENTICAL -> "${live.size} identical copies"
+        else -> "${live.size} look-alike photos"
     }
 
     fun label(m: Member, g: Group): String {
@@ -47,10 +51,11 @@ object Words {
             Relation.IDENTICAL -> "Identical copy"
             Relation.LOOKALIKE -> {
                 val pct = "${(m.score ?: 0f).toInt()}%"
-                when (m.how) {
-                    "rotated" -> "Turned · $pct"
-                    "mirrored" -> "Mirrored · $pct"
-                    "cropped" -> "Cropped · $pct"
+                when {
+                    m.how == "mirrored" -> "Mirrored · $pct"
+                    m.how == "cropped" -> "Cropped · $pct"
+                    m.edited -> "Edited · $pct"
+                    m.how == "rotated" -> "Turned · $pct"
                     else -> "$pct alike"
                 }
             }
@@ -75,7 +80,7 @@ object Words {
             (m.via?.let { " It looks like ${r.items[it].name}." } ?: "")
         m.relation == Relation.POOR -> "Possibly a poor shot. It isn't ticked for you: decide for yourself."
         m.relation == Relation.IDENTICAL -> "Byte-for-byte the same file as the one kept."
-        m.relation == Relation.BURST -> "Another shot of the same moment, less sharp than the one kept."
+        m.relation == Relation.BURST -> "Another shot of the same moment, no sharper than the one kept."
         m.relation == Relation.LOOKALIKE -> "The same picture as the one kept, at a smaller size or saved again."
         else -> ""
     }
@@ -118,6 +123,10 @@ class Tiles(private val act: MainActivity, private val r: ScanResult, val sizePx
             setPadding(ui.dp(8), ui.dp(8), ui.dp(8), ui.dp(8))
             background = ui.pressable(null, 24f)
         }
+        // Made once for the tile, not on every scroll step.
+        private val tickOn = tickDrawable(true)
+        private val tickOff = tickDrawable(false)
+        private val tickedFrame = ui.rounded(0x33000000, 16f, c.danger, 3f)
         val frame = FrameLayout(act).apply {
             addView(img.flp(MATCH, MATCH))
             addView(badge.flp(WRAP, WRAP, Gravity.TOP or Gravity.START, l = ui.dp(6), t = ui.dp(6)))
@@ -136,9 +145,9 @@ class Tiles(private val act: MainActivity, private val r: ScanResult, val sizePx
             val item = r.items[m.item]
             Thumbs.load(act.contentResolver, img, item.uri, sizePx)
             val selected = m.item in r.selected
-            check.setImageDrawable(tickDrawable(selected))
+            check.setImageDrawable(if (selected) tickOn else tickOff)
             check.contentDescription = if (selected) "Ticked for the trash: tap to keep" else "Tap to tick for the trash"
-            frame.foreground = if (selected) ui.rounded(0x33000000, 16f, c.danger, 3f) else null
+            frame.foreground = if (selected) tickedFrame else null
             badge.visibility = if (m.keeper) View.VISIBLE else View.GONE
             star.visibility = if (Flag.FAVORITE in m.flags) View.VISIBLE else View.GONE
             play.visibility = if (item.kind == MediaKind.VIDEO) View.VISIBLE else View.GONE
@@ -190,10 +199,13 @@ class ResultsScreen(act: MainActivity, private val r: ScanResult) : Screen(act) 
         addView(chips)
     }
 
+    /** Each group keeps its number, so a card stays with its group when others leave the list. */
+    private val ids = java.util.IdentityHashMap<Group, Long>().apply { r.groups.forEachIndexed { i, g -> put(g, i.toLong()) } }
     private val adapter = object : BaseAdapter() {
         override fun getCount() = shown.size
         override fun getItem(position: Int) = shown[position]
-        override fun getItemId(position: Int) = position.toLong()
+        override fun getItemId(position: Int) = ids[shown[position]] ?: position.toLong()
+        override fun hasStableIds() = true
         override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
             val card = (convertView?.tag as? Card) ?: Card()
             card.bind(shown[position])
@@ -237,6 +249,7 @@ class ResultsScreen(act: MainActivity, private val r: ScanResult) : Screen(act) 
     override fun onShown() {
         bottom.layout()
         refresh()
+        checkStillThere()
     }
 
     override fun onConfigurationChanged() = bottom.layout()
@@ -266,6 +279,7 @@ class ResultsScreen(act: MainActivity, private val r: ScanResult) : Screen(act) 
             else "${Fmt.plural(dupes.size, "group", "groups")} · up to ${Fmt.bytes(freeable)} to free",
         )
         empty.visibility = if (visible.isEmpty()) View.VISIBLE else View.GONE
+        emptyTitle.text = if (r.trashed.isEmpty()) "No duplicates found" else "All cleaned up"
         emptyBody.text = "Checked ${Fmt.plural(r.photoCount, "photo", "photos")} and ${Fmt.plural(r.videoCount, "video", "videos")} " +
             "in ${Fmt.plural(r.folders, "folder", "folders")}" +
             (if (r.trashed.isNotEmpty()) ", and ${Fmt.plural(r.trashed.size, "file", "files")} went to the trash." else ".") +
@@ -292,9 +306,9 @@ class ResultsScreen(act: MainActivity, private val r: ScanResult) : Screen(act) 
 
     private fun toggle(item: Int) = tick(mapOf(item to (item !in r.selected)))
 
-    /** Ticks by hand: remembered for later scans too (null: back to the suggestion). */
+    /** Ticks by hand (null: back to the suggestion). What you keep is remembered in later scans too. */
     private fun tick(changes: Map<Int, Boolean?>) {
-        Prefs.setOverrides(ctx, r.tick(changes))
+        r.tick(changes).let { Prefs.choose(ctx, it.keep, it.tick) }
         refresh()
     }
 
@@ -310,15 +324,17 @@ class ResultsScreen(act: MainActivity, private val r: ScanResult) : Screen(act) 
         val keepBest = ui.button("Keep best", Ui.Style.TEXT) {}
         val keepAll = ui.button("Keep all", Ui.Style.TEXT) {}
         val showAll = ui.button("Show all", Ui.Style.TEXT) {}
+        private var bound: Group? = null
+        private val scroller = HorizontalScrollView(ctx).apply {
+            isHorizontalScrollBarEnabled = false
+            clipToPadding = false
+            setPadding(ui.dp(16), 0, ui.dp(8), 0)
+            addView(strip)
+        }
         private val inner: LinearLayout = ui.vbox(
             title.lp(l = ui.dp(16), r = ui.dp(16)),
             sub.lp(l = ui.dp(16), r = ui.dp(16)),
-            HorizontalScrollView(ctx).apply {
-                isHorizontalScrollBarEnabled = false
-                clipToPadding = false
-                setPadding(ui.dp(16), 0, ui.dp(8), 0)
-                addView(strip)
-            }.lp(t = ui.dp(12)),
+            scroller.lp(t = ui.dp(12)),
             ui.hbox(ui.space(weight = 1f), showAll, keepAll, keepBest).lp(t = ui.dp(4), r = ui.dp(8)),
         ).apply {
             background = ui.rounded(c.surface, 24f)
@@ -328,8 +344,11 @@ class ResultsScreen(act: MainActivity, private val r: ScanResult) : Screen(act) 
         val root: LinearLayout = ui.vbox(inner.lp(l = ui.dp(12), t = ui.dp(6), r = ui.dp(12), b = ui.dp(6))).apply { tag = this@Card }
 
         fun bind(g: Group) {
+            // A card reused for another group starts at its first picture, the one to keep.
+            if (bound !== g) scroller.scrollTo(0, 0)
+            bound = g
             val live = r.live(g)
-            title.text = Words.groupTitle(g, live.size)
+            title.text = Words.groupTitle(g, live)
             val ticked = live.filter { it.item in r.selected }
             val folders = live.map { r.items[it.item].folder.substringAfterLast('/').ifEmpty { "Top folder" } }.distinct()
             sub.text = (if (ticked.isEmpty()) "Nothing ticked" else "${Fmt.bytes(ticked.sumOf { r.items[it.item].size })} ticked") +
@@ -369,20 +388,22 @@ class ResultsScreen(act: MainActivity, private val r: ScanResult) : Screen(act) 
 
     private fun trashSelected() {
         if (busy) return
-        val sel = selectedLive()
-        if (sel.isEmpty()) return
+        if (selectedLive().isEmpty()) return
         busy = true
         ui.enable(trashButton, false)
-        // Files deleted or moved by another app since the scan would make Android refuse the batch.
-        Bg.run({ MediaIndex.existing(ctx, sel.map { r.items[it] }) }) { present ->
+        // Files deleted or moved by another app since the scan would make Android refuse the batch,
+        // and a copy that has gone changes what "every copy" means: check every file of the groups
+        // that have a tick, not only the ticked ones.
+        val check = filesToCheck()
+        Bg.run({ MediaIndex.existing(ctx, check.map { r.items[it] }) }) { present ->
             busy = false
             if (present == null) {
                 act.toast("Couldn't check the files. Try again.")
                 refresh()
                 return@run
             }
-            val left = sel.filter { r.items[it].key in present }
-            gone(sel.filter { r.items[it].key !in present })
+            gone(check.filter { r.items[it].key !in present })
+            val left = selectedLive()
             if (left.isEmpty()) {
                 refresh()
                 return@run
@@ -403,13 +424,31 @@ class ResultsScreen(act: MainActivity, private val r: ScanResult) : Screen(act) 
         }
     }
 
-    /** Files that left the phone without this app: shown as gone, never acted on. */
+    /** Every file still listed in a group that has a tick (and the ticked blurry or dark photos). */
+    private fun filesToCheck(): List<Int> {
+        val out = LinkedHashSet<Int>()
+        for (g in r.groups) {
+            val live = r.live(g)
+            if (live.none { it.item in r.selected }) continue
+            for (m in live) if (g.type != GroupType.POOR || m.item in r.selected) out.add(m.item)
+        }
+        return out.toList()
+    }
+
+    /**
+     * Files that left the phone without this app: shown as gone, never acted on. A copy that is now
+     * the last of its group is unticked, since its group is no longer shown.
+     */
     private fun gone(items: List<Int>) {
         if (items.isEmpty()) return
         r.trashed.addAll(items)
         r.selected.removeAll(items.toSet())
+        val unticked = r.settle()
         act.mediaChanged = true
-        act.toast(if (items.size == 1) "1 file was already gone" else "${Fmt.count(items.size)} files were already gone")
+        act.toast(
+            (if (items.size == 1) "1 file was already gone." else "${Fmt.count(items.size)} files were already gone.") +
+                if (unticked.isEmpty()) "" else " A last copy left on its own was unticked.",
+        )
     }
 
     /** In batches: one confirmation can only carry so many files. */
@@ -446,6 +485,7 @@ class ResultsScreen(act: MainActivity, private val r: ScanResult) : Screen(act) 
     private fun trashed(moved: List<Int>) {
         if (moved.isEmpty()) return
         r.trashed.addAll(moved)
+        r.settle()
         lastTrashed = moved
         act.mediaChanged = true
         val bytes = moved.sumOf { r.items[it].size }
@@ -475,16 +515,18 @@ class ResultsScreen(act: MainActivity, private val r: ScanResult) : Screen(act) 
     }
 
     /**
-     * Back in the app: ticked files may have been deleted elsewhere meanwhile (or an answer from
-     * Android lost when the screen was rebuilt). Those are shown as gone.
+     * Back in the app or on this screen: files may have been deleted elsewhere meanwhile (or an
+     * answer from Android lost when the screen was rebuilt). Those are shown as gone.
      */
-    override fun onResumed() {
+    override fun onResumed() = checkStillThere()
+
+    private fun checkStillThere() {
         if (busy) return
-        val sel = selectedLive()
-        if (sel.isEmpty()) return
-        Bg.run({ MediaIndex.existing(ctx, sel.map { r.items[it] }) }) { present ->
+        val check = filesToCheck()
+        if (check.isEmpty()) return
+        Bg.run({ MediaIndex.existing(ctx, check.map { r.items[it] }) }) { present ->
             if (present == null || busy) return@run
-            val missing = sel.filter { r.items[it].key !in present && it !in r.trashed }
+            val missing = check.filter { r.items[it].key !in present && it !in r.trashed }
             if (missing.isNotEmpty()) {
                 gone(missing)
                 refresh()
@@ -505,15 +547,16 @@ class GroupScreen(act: MainActivity, private val r: ScanResult, private val g: G
     private val tiles = Tiles(act, r, tilePx, { gr, m ->
         act.push(ViewerScreen(act, r, gr, live, live.indexOf(m).coerceAtLeast(0)))
     }, { item -> tick(mapOf(item to (item !in r.selected))) })
-    private val bar = ui.topBar(Words.groupTitle(g, live.size), null, { act.pop() },
+    private val bar = ui.topBar(Words.groupTitle(g, live), null, { act.pop() },
         ui.button("Tick all", Ui.Style.TEXT) { tick(live.filter { !it.keeper }.associate { it.item to true }) },
         ui.button("None", Ui.Style.TEXT) { tick(live.associate { it.item to false }) },
     )
 
     private fun tick(changes: Map<Int, Boolean?>) {
-        Prefs.setOverrides(ctx, r.tick(changes))
+        r.tick(changes).let { Prefs.choose(ctx, it.keep, it.tick) }
         refresh()
     }
+
     private val adapter = object : BaseAdapter() {
         override fun getCount() = live.size
         override fun getItem(position: Int) = live[position]
@@ -541,7 +584,7 @@ class GroupScreen(act: MainActivity, private val r: ScanResult, private val g: G
     private fun refresh() {
         live = r.live(g)
         val ticked = live.count { it.item in r.selected }
-        bar.set(Words.groupTitle(g, live.size), "$ticked ticked for the trash")
+        bar.set(Words.groupTitle(g, live), "$ticked ticked for the trash")
         adapter.notifyDataSetChanged()
     }
 }

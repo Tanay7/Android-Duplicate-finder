@@ -17,6 +17,14 @@ object CopyNames {
         return MARKER.containsMatchIn(stem)
     }
 
+    private val RAW = setOf(
+        "dng", "cr2", "cr3", "crw", "nef", "nrw", "arw", "srf", "sr2", "orf", "rw2", "raf", "pef", "srw", "rwl", "3fr",
+        "iiq", "erf", "kdc", "mos",
+    )
+
+    /** A camera RAW file, by its name (DupeFinder's list). */
+    fun isRaw(path: String): Boolean = path.substringAfterLast('.', "").lowercase(Locale.ROOT) in RAW
+
     /**
      * Folders where phones create originals: the camera (DCIM), screenshots and screen recordings.
      * A copy there is kept before one that was saved, downloaded or shared elsewhere.

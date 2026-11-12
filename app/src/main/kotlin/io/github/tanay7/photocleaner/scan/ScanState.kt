@@ -27,7 +27,12 @@ class ScanRequest(
     val verbose: Boolean,
     /** Bringing back the results of the last scan after Android closed the app. */
     val restoring: Boolean = false,
-)
+) {
+    /** Set to stop this scan. */
+    val cancel = AtomicBoolean()
+    /** Android's daily limit for work in the background ran out: the scan was stopped for that. */
+    @Volatile var timedOut = false
+}
 
 enum class Stage { LISTING, READING, VIDEOS, COMPARING }
 
@@ -45,8 +50,10 @@ class ScanResult(
     val seconds: Double,
     /** Threads that read the files at once: one per core, as far as memory allowed. */
     val threads: Int,
-    /** Choices made by hand before (file key to ticked), which win over the suggestions. */
-    overrides: Map<String, Boolean> = emptyMap(),
+    /** Files kept by hand before (by key): never ticked, whatever is suggested. */
+    keeps: Set<String> = emptySet(),
+    /** Files ticked by hand in these results before the app was closed (by key). */
+    ticks: Set<String> = emptySet(),
 ) {
     val selected = HashSet<Int>()
     val trashed = HashSet<Int>()
@@ -55,26 +62,42 @@ class ScanResult(
     init {
         for (g in groups) for (m in g.members) {
             if (m.suggestTrash) suggested.add(m.item)
-            when (overrides[items[m.item].key]) {
-                true -> selected.add(m.item)
-                false -> Unit
-                null -> if (m.suggestTrash) selected.add(m.item)
-            }
+            val key = items[m.item].key
+            if (key !in keeps && (m.suggestTrash || key in ticks)) selected.add(m.item)
         }
     }
 
-    /**
-     * Ticks or unticks files by hand and remembers it (null: back to the suggestion); returns the
-     * choices to save, by file key: null where the choice now matches the suggestion.
-     */
-    fun tick(changes: Map<Int, Boolean?>): Map<String, Boolean?> {
-        val save = HashMap<String, Boolean?>()
+    /** What ticking by hand changes in the saved choices: for each file key, added (true) or taken out. */
+    class Choice(val keep: Map<String, Boolean>, val tick: Map<String, Boolean>)
+
+    /** Ticks or unticks files by hand (null: back to the suggestion) and returns what to remember. */
+    fun tick(changes: Map<Int, Boolean?>): Choice {
+        val keep = HashMap<String, Boolean>()
+        val tick = HashMap<String, Boolean>()
         for ((item, on) in changes) {
-            val want = on ?: (item in suggested)
+            val suggestion = item in suggested
+            val want = on ?: suggestion
             if (want) selected.add(item) else selected.remove(item)
-            save[items[item].key] = if (on == null || want == (item in suggested)) null else want
+            val key = items[item].key
+            keep[key] = suggestion && !want
+            tick[key] = !suggestion && want
         }
-        return save
+        return Choice(keep, tick)
+    }
+
+    /**
+     * After files have gone (to the trash, or deleted by another app): a group with a single file
+     * left has nothing to compare any more and is no longer shown, so that file must not stay ticked
+     * where nobody can see it. Returns the files it unticked.
+     */
+    fun settle(): List<Int> {
+        val out = ArrayList<Int>()
+        for (g in groups) {
+            if (g.type == GroupType.POOR) continue
+            val live = live(g)
+            if (live.size == 1 && selected.remove(live[0].item)) out.add(live[0].item)
+        }
+        return out
     }
 
     /** The members still on the phone. */
@@ -91,8 +114,8 @@ class ScanResult(
         else -> Category.LOOKALIKE
     }
 
-    val photoCount get() = items.count { it.kind == MediaKind.PHOTO }
-    val videoCount get() = items.count { it.kind == MediaKind.VIDEO }
+    val photoCount = items.count { it.kind == MediaKind.PHOTO }
+    val videoCount = items.size - photoCount
 }
 
 enum class Category(val label: String) {
@@ -110,7 +133,13 @@ object ScanState {
     @Volatile var status: Status = Idle
         private set
     @Volatile var request: ScanRequest? = null
-    val cancel = AtomicBoolean()
+        private set
+    /**
+     * A scan has been asked for and hasn't wound up yet: the next one must wait. (For a moment after
+     * [status] says a scan is over, its thread is still letting go.)
+     */
+    @Volatile var busy = false
+        private set
     /** True while a screen of the app is showing: the "scan finished" notification is only needed otherwise. */
     @Volatile var uiVisible = false
 
@@ -120,7 +149,30 @@ object ScanState {
     val running: Boolean get() = status is Running
     val result: ScanResult? get() = (status as? Done)?.result
 
-    fun post(s: Status) {
+    /** A scan is asked for (main thread). */
+    fun begin(req: ScanRequest) {
+        request = req
+        busy = true
+        post(Running(Stage.LISTING, 0, 0))
+    }
+
+    /** How far the scan of [req] is; ignored once another scan has taken its place. */
+    fun progress(req: ScanRequest, s: Running) {
+        if (request === req && busy) post(s)
+    }
+
+    /** The scan of [req] is over and has let go of everything (main thread). */
+    fun end(req: ScanRequest, s: Status) {
+        if (request !== req) return
+        busy = false
+        post(s)
+    }
+
+    fun cancel() {
+        request?.cancel?.set(true)
+    }
+
+    private fun post(s: Status) {
         status = s
         main.post { for (l in listeners) l(s) }
     }
