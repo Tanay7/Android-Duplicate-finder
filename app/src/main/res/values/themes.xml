@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Framework DayNight theme without an action bar: every screen draws its own top bar.
+         Colours come from the wallpaper (Material You) at run time. -->
+    <style name="Cleaner" parent="@android:style/Theme.DeviceDefault.DayNight">
+        <item name="android:windowActionBar">false</item>
+        <item name="android:windowNoTitle">true</item>
+    </style>
+</resources>

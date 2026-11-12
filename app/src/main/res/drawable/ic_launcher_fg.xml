@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Two photos, one about to be cleaned away, and a check: duplicates sorted out. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <group android:rotation="-12" android:pivotX="48" android:pivotY="50">
+        <path android:fillColor="#FF90CAF9"
+            android:pathData="M31,32h34a5,5 0 0 1 5,5v26a5,5 0 0 1 -5,5h-34a5,5 0 0 1 -5,-5v-26a5,5 0 0 1 5,-5z" />
+    </group>
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M37,40h34a5,5 0 0 1 5,5v26a5,5 0 0 1 -5,5h-34a5,5 0 0 1 -5,-5v-26a5,5 0 0 1 5,-5z" />
+    <path android:fillColor="#FF1E88E5" android:pathData="M36,71l10,-13l7,8l5,-6l13,11z" />
+    <path android:fillColor="#FFFFB300" android:pathData="M64,46a4,4 0 1 1 0,8a4,4 0 1 1 0,-8z" />
+    <path android:fillColor="#FF2E7D32" android:pathData="M76,61a11,11 0 1 1 0,22a11,11 0 1 1 0,-22z" />
+    <path android:strokeColor="#FFFFFFFF" android:strokeWidth="2.6" android:strokeLineCap="round"
+        android:strokeLineJoin="round" android:fillColor="#00000000" android:pathData="M70.5,72.5l3.6,3.6l7.4,-7.6" />
+</vector>
