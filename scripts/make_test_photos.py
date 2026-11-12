@@ -16,7 +16,9 @@ DCIM/Camera/DOC_0[1-5].jpg        5 pages of a document, photographed 2 s apart 
 Pictures/Screenshots/settings_[12].png  two different settings screens          -> nothing: not look-alikes
 Pictures/Other/*.jpg, *.png       unrelated photos                             -> nothing
 Pictures/Night/dark.jpg           a very dark shot from a camera               -> blurry or dark
-Pictures/Big/panorama.jpg         8000 x 2000 px                               -> nothing (read reduced)
+Pictures/Big/panorama.jpg         8000 x 2000 px, read reduced to an eighth    -> kept
+Pictures/Big/panorama_small.jpg   the panorama at a quarter of its size        -> its copy (read reduced to half)
+Pictures/Big/panorama.webp        the panorama in another format, as large     -> not ticked: no telling which is the original
 Pictures/Broken/truncated.jpg     the first 6 KB of a photo                    -> can't be decoded
 Pictures/Broken/not-a-photo.jpg   text with a photo's name                     -> can't be decoded
 Pictures/CrashTest/*.jpg          3 photos; a test build of the app dies on purpose when it reads
@@ -28,8 +30,9 @@ the screens, mostly white, would also count as overexposed if screenshots were j
 
 Expected from a scan of everything: one look-alike group of 8 (the camera original kept with 4
 copies of it ticked, the brighter edit kept as well with its small copy ticked, the copy with the
-sticker kept as well), one burst of 5 (a sharp frame kept, 4 ticked) and the dark shot listed on its
-own; the broken files are reported, and stop nothing.
+sticker kept as well), one of the panorama (its small copy ticked, the WebP of the same size left
+alone), one burst of 5 (a sharp frame kept, 4 ticked) and the dark shot listed on its own; the broken
+files are reported, and stop nothing.
 """
 import os
 import random
@@ -165,7 +168,12 @@ def main(out):
     save(scene(4, 1024, 768), out, "Pictures/Other/diagram.png")
     save(scene(5), out, "Pictures/Other/street.jpg", ex=exif("2024:06:01 12:00:00", "OtherCam", "Two"))
     save(ImageEnhance.Brightness(scene(6)).enhance(0.12), out, "Pictures/Night/dark.jpg", ex=exif("2024:05:02 23:10:00"))
-    save(scene(7, 8000, 2000), out, "Pictures/Big/panorama.jpg", quality=80)
+    # A photo larger than the app reads it: its copy must still be found when both are read reduced,
+    # by different amounts, and its twin in another format must not be judged by its size.
+    pano = scene(7, 8000, 2000)
+    save(pano, out, "Pictures/Big/panorama.jpg", quality=80)
+    save(pano.resize((2000, 500), Image.LANCZOS), out, "Pictures/Big/panorama_small.jpg", quality=80)
+    pano.save(os.path.join(out, "Pictures/Big/panorama.webp"), "WEBP", quality=80)
 
     broken = os.path.join(out, "Pictures/Broken")
     os.makedirs(broken, exist_ok=True)

@@ -155,10 +155,10 @@ fi
 echo "== everything is ticked"
 r=$(scan '*'); echo "$r"
 sleep 1   # the lines for each group follow the result
-expect "$r" photos 27
+expect "$r" photos 29
 expect "$r" videos $((2 * VIDEOS))
-expect "$r" groups $((3 + VIDEOS))
-expect "$r" lookalike 1
+expect "$r" groups $((4 + VIDEOS))
+expect "$r" lookalike 2
 expect "$r" bursts 1
 expect "$r" poor 1
 expect "$r" videogroups $VIDEOS
@@ -166,21 +166,28 @@ expect "$r" undecodable 2          # the truncated photo and the text file: repo
 expect "$r" unreadable 0
 expect "$r" quarantined 0
 [ "$(field "$r" threads)" -ge 1 ] && ok "read on $(field "$r" threads) threads, $(field "$r" cores) cores" || fail "no thread count"
-PHOTOS_TICKED=9                    # 4 copies of the original, the edit's small copy, 4 burst frames
+PHOTOS_TICKED=10                   # 4 copies of the original, the edit's small copy, the panorama's, 4 burst frames
 TICKED=$((PHOTOS_TICKED + VIDEOS))
 expect "$r" suggested $TICKED
-grep ' GROUP lookalike ' logcat.txt | tail -1 | grep -q 'KEEP:DCIM/Camera/IMG_0001.jpg' &&
+group() { grep ' GROUP lookalike ' logcat.txt | grep "$1" | tail -1; }   # the latest look-alike group with that file
+group IMG_0001 | grep -q 'KEEP:DCIM/Camera/IMG_0001.jpg' &&
   ok "the camera original is kept" || fail "the camera original isn't the kept copy"
-grep ' GROUP lookalike ' logcat.txt | tail -1 | grep -q 'TRASH:Pictures/Edited/turned.jpg' &&
+group IMG_0001 | grep -q 'TRASH:Pictures/Edited/turned.jpg' &&
   ok "the turned copy is found" || fail "the turned copy wasn't matched"
 # an edit is a version of its own: kept as well, and its own copy is what goes
-grep ' GROUP lookalike ' logcat.txt | tail -1 | grep -q 'KEEP:Pictures/Edited/brighter.jpg' &&
+group IMG_0001 | grep -q 'KEEP:Pictures/Edited/brighter.jpg' &&
   ok "the brighter edit is kept as well" || fail "the brighter edit isn't kept as a version of its own"
-grep ' GROUP lookalike ' logcat.txt | tail -1 | grep -q 'TRASH:Pictures/Edited/brighter_small.jpg' &&
+group IMG_0001 | grep -q 'TRASH:Pictures/Edited/brighter_small.jpg' &&
   ok "the edit's small copy goes" || fail "the edit's small copy isn't ticked"
 # a copy with a small sticker on it looks the same as a whole, not where the sticker is
-grep ' GROUP lookalike ' logcat.txt | tail -1 | grep -q 'KEEP:Pictures/Edited/sticker.jpg' &&
+group IMG_0001 | grep -q 'KEEP:Pictures/Edited/sticker.jpg' &&
   ok "the copy with a sticker is kept as well" || fail "the copy with a sticker isn't kept as a version of its own"
+# a photo read reduced to an eighth and its copy read reduced to half are still the same picture
+group panorama | grep -q 'TRASH:Pictures/Big/panorama_small.jpg' &&
+  ok "the large photo's small copy is found" || fail "the large photo's small copy wasn't matched"
+# ... and its twin in another format, as large, is not judged by its size
+group panorama | grep -q 'TRASH:Pictures/Big/panorama.jpg\|TRASH:Pictures/Big/panorama.webp' &&
+  fail "of the same photo in two formats, one was ticked" || ok "the same photo in two formats: neither is ticked"
 last=$(grep -n ' RESULT ' logcat.txt | tail -1 | cut -d: -f1)
 if tail -n +"$last" logcat.txt | grep ' GROUP ' | grep -qE 'DOC_0|settings_'; then
   fail "different pages or screens were grouped"
@@ -242,6 +249,11 @@ else
   sleep 3; shot 12-results-restored
   if [ "$(grep -c ' RESULT ' logcat.txt)" -gt "$n0" ] && python3 "$HERE/ui.py" '^Results$' >/dev/null; then
     ok "the results came back after Android closed the app"
+    # ... the same ones: nothing is read again, and what is known about each photo comes from the cache
+    rr=$(grep ' RESULT ' logcat.txt | tail -1); rr=${rr#*RESULT }; echo "$rr"
+    expect "$rr" photos 29
+    expect "$rr" lookalike 2
+    expect "$rr" suggested $TICKED
   else
     fail "the results didn't come back after Android closed the app"
   fi
