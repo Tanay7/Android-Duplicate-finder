@@ -40,6 +40,37 @@ object Parallelism {
     }
 
     /**
+     * The reduction (1, 2, 4, 8 ...) to decode a photo at whose long side has [long] pixels: the
+     * largest power of two that leaves at least [ImageAnalysis.SMALLEST_REDUCED] of them.
+     *
+     * A JPEG decoder reduces by 2, 4 or 8 as it decodes, for less work than the whole picture.
+     * Asked for any other size (1024 px of a 4000 px photo, a reduction by 3.9), Android decodes the
+     * picture whole and keeps every third pixel: two and a half times slower (libjpeg-turbo takes
+     * 49 ms for a 12-megapixel photo whole and 20 ms at a quarter, 209 and 83 ms for 50 megapixels
+     * at an eighth), and the skipped pixels leave jagged detail. So the decoder is asked for a power
+     * of two, and what comes out larger than [ImageAnalysis.REDUCED_SIZE] is reduced the rest of the
+     * way, smoothly. The phones' usual sizes (4000, 4032, 4080 and 8160 px) come out at 1000 to
+     * 1020 px with no second step.
+     */
+    fun sampleFor(long: Int): Int {
+        var s = 1
+        while (long / (s * 2) >= ImageAnalysis.SMALLEST_REDUCED) s *= 2
+        return s
+    }
+
+    /**
+     * The same for a file of type [mime]. JPEG and WebP decoders reduce with every pixel (in their
+     * transform, or by averaging). The others (PNG, HEIC, AVIF, GIF) reduce by skipping pixels, so
+     * they are asked for only half the reduction, and the last halving is done afterwards, averaging:
+     * a photo is measured as sharp as it is, whatever its format.
+     */
+    fun sampleFor(long: Int, mime: String?): Int {
+        val s = sampleFor(long)
+        val type = mime?.lowercase().orEmpty()
+        return if (s == 1 || type.endsWith("/jpeg") || type.endsWith("/jpg") || type.endsWith("/webp")) s else s / 2
+    }
+
+    /**
      * Roughly the memory (bytes) that decoding a [width] x [height] photo takes at its peak. JPEG, PNG
      * and WebP are decoded reduced as they are read. HEIC and AVIF are decoded whole before they are
      * reduced, and a RAW file is developed whole, in floating point: a 50-megapixel HEIC takes 300 MB,
@@ -49,8 +80,7 @@ object Parallelism {
         val known = width > 0 && height > 0
         val px = if (known) width.toLong() * height else 12_000_000L
         val long = if (known) max(width, height) else 4000
-        var sample = 1L
-        while (long / (sample * 2) >= ImageAnalysis.REDUCED_SIZE) sample *= 2
+        val sample = sampleFor(long, mime).toLong()
         val reduced = px / (sample * sample) * 4 + (4L shl 20)
         val type = mime.lowercase()
         return when {

@@ -126,8 +126,16 @@ Reader do it:
   photo for location data first, and reads don't pass through its filter.
 - **Each thread keeps its own buffers** (the grey copy, the noise filter's output, a read buffer and
   its SHA-256 state), so reading a photo allocates almost nothing and the garbage collector doesn't
-  stop the threads. Photos are fingerprinted as they stream in and decoded straight to 1024 px, in
-  sRGB: no file is ever held in memory whole.
+  stop the threads. Photos are fingerprinted as they stream in and decoded reduced, in sRGB: no file
+  is ever held in memory whole.
+- **Photos are decoded the decoder's quick way.** A JPEG decoder can reduce a photo by 2, 4 or 8 as
+  it decodes. Asked for any other size (1024 px of a 4000 px photo), Android decodes the picture
+  whole and keeps every third pixel, which takes two and a half times as long (measured with
+  libjpeg-turbo: 49 ms against 20 ms for 12 megapixels, 209 against 83 ms for 50) and leaves jagged
+  detail. So the app asks for a power of two that leaves 960 to 1024 px (the phones' usual 4000,
+  4032, 4080 and 8160 px all land there in one step), and reduces the rest of the way itself where
+  none does. Decoders that can only reduce by skipping pixels (PNG, HEIC, AVIF) are asked for half
+  the reduction, and the app averages the last halving, so blur is measured alike in every format.
 - **Decoders share a memory budget.** JPEG, PNG and WebP are decoded reduced. HEIC and AVIF are
   decoded whole first and a RAW file is developed whole, so a 50-megapixel HEIC takes 300 MB for a
   moment: those wait for each other when memory is short, while small photos keep every core busy.
@@ -144,8 +152,9 @@ Reader do it:
   read or couldn't be decoded get a second try at the end, one at a time, in case the crowd was the
   cause (phones have few hardware decoders for HEIC photos).
 - **A file that hangs is given up** after a minute (plus a second per 10 MB), and a spare thread
-  takes the place of the one it holds. If the storage stops answering altogether (a failing SD
-  card), the rest is given up too: a scan always ends.
+  takes the place of the one it holds. The memory its decoder holds is written off, so no other
+  photo waits for it. If the storage stops answering altogether (a failing SD card), the rest is
+  given up too: a scan always ends.
 - **A photo that makes the app die is found and left out.** A crash inside a picture decoder can't
   be caught: the app is gone. The app notes which files it is reading in a small journal. After such
   a death, the next scan reads the files that were in flight one at a time; a file that kills the
@@ -190,7 +199,7 @@ this key: it is only fit for sideloading your own builds. Use a private key for 
 
 | What | How |
 |---|---|
-| JVM tests (69): perceptual hashes and fine fingerprints of synthetic photos (resized, saved again, turned, mirrored, cropped, grey), blur, noise, exposure, brightness and contrast measures, the median filter against a naive one, reused per-thread buffers giving the same answers as fresh ones; every grouping and keep rule (identical, look-alike, turned, mirrored, cropped, edited, RAW twins, versions that each keep their best copy, linked through another file, bursts, RAW and JPEG bursts, their copies and far frames, colour, favourites, flat pictures, videos, poor shots, matching on many threads, stopping and progress); 60 different text pages and 40 app screens that a pHash confuses must never be grouped, nor pages photographed one after the other be a burst; the thread count, time limits, heat rules, the decoders' memory budget (also with a decoder that hangs) and the crash journal; what is ticked in the results, what is remembered, and that the last copy of a picture or of a version never stays ticked; the folder tree, tick boxes and how new folders are treated; copy names and sizes | `./gradlew testDebugUnitTest` |
+| JVM tests (71): perceptual hashes and fine fingerprints of synthetic photos (resized, saved again, turned, mirrored, cropped, grey), blur, noise, exposure, brightness and contrast measures, the median filter against a naive one, reused per-thread buffers giving the same answers as fresh ones; every grouping and keep rule (identical, look-alike, turned, mirrored, cropped, edited, RAW twins, versions that each keep their best copy, linked through another file, bursts, RAW and JPEG bursts, their copies and far frames, colour, favourites, flat pictures, videos, poor shots, matching on many threads, stopping and progress); 60 different text pages and 40 app screens that a pHash confuses must never be grouped, nor pages photographed one after the other be a burst; the thread count, the power-of-two reduction photos are decoded at, capture times, time limits, heat rules, the decoders' memory budget (also with a decoder that hangs) and the crash journal; what is ticked in the results, what is remembered, and that the last copy of a picture or of a version never stays ticked; the folder tree, tick boxes and how new folders are treated; copy names and sizes | `./gradlew testDebugUnitTest` |
 | On-device test on Android 16 and 17 emulators: copies test photos to the phone (`scripts/make_test_photos.py`), including five document pages photographed 2 s apart and two settings screens that a pHash takes for a burst and for look-alikes, an edited version with a copy of its own, a truncated photo, a text file with a photo's name and an 8000 px panorama; scans three different sets of folders and checks every group found, what is ticked and what is left alone, and the broken files reported; moves the ticked files to the trash through the real button and Android's own dialog, checks the media index, undoes it; has Android close the app while its results are open and checks they come back; with a test build that dies on purpose while reading one photo, checks that the photo is left out by the third scan; rotates, and runs 15,000 random GUI events (monkey); fails on any wrong result, crash or ANR | `scripts/device-test.sh` (CI) |
 | Static analysis: Android lint | `./gradlew lintDebug` |
 
@@ -205,7 +214,7 @@ this key: it is only fit for sideloading your own builds. Use a private key for 
 | `core/Parallelism.kt` | how many threads a scan runs, how long a file may take, how many threads rest when the phone is hot, and the memory budget decoders share |
 | `core/Journal.kt` | the note of files being read, which finds a photo that makes the app die |
 | `media/MediaIndex.kt` | reads photos, videos and storage volumes from Android's media index |
-| `media/Analyzer.kt` | opens a file once and reads its SHA-256, EXIF capture time and camera, and its pixels reduced to 1024 px |
+| `media/Analyzer.kt` | opens a file once and reads its SHA-256, EXIF capture time and camera, and its pixels reduced to 960-1024 px |
 | `media/FeatureCache.kt` | the fingerprint cache (SQLite), so later scans only read new files |
 | `media/Thumbs.kt` | thumbnails and full-size pictures, off the main thread |
 | `scan/Scanner.kt` | a scan of the ticked folders: the threads on every core, the watchdog and its spare threads, the second tries, the heat limit, the crash quarantine |

@@ -92,6 +92,24 @@ class NamesTest {
         assertFalse(CopyNames.isOriginalFolder("Pictures/WhatsApp/DCIM-backup"))
     }
 
+    @Test fun captureTimesAreTheCamerasOwnClock() {
+        // 2024-05-01 10:05:03, whatever zone the photo was taken in or the phone is in now
+        val t = java.time.LocalDateTime.of(2024, 5, 1, 10, 5, 3).toEpochSecond(java.time.ZoneOffset.UTC).toDouble()
+        assertEquals(t, ExifTime.seconds("2024:05:01 10:05:03")!!, 0.0)
+        assertEquals(t, ExifTime.seconds("2024-05-01T10:05:03")!!, 0.0)           // some cameras write it this way
+        assertEquals(t, ExifTime.seconds("2024:05:01 10:05:03\u0000")!!, 0.0)
+        // fractions of a second tell the frames of a burst apart
+        assertEquals(t + 0.25, ExifTime.seconds("2024:05:01 10:05:03", "25")!!, 1e-9)
+        assertEquals(t + 0.5, ExifTime.seconds("2024:05:01 10:05:03", "5")!!, 1e-9)
+        assertEquals(t + 0.123456, ExifTime.seconds("2024:05:01 10:05:03", "123456 ")!!, 1e-9)
+        assertEquals(t, ExifTime.seconds("2024:05:01 10:05:03", "x1")!!, 0.0)
+        assertEquals(1.0, ExifTime.seconds("2024:05:01 10:05:04")!! - ExifTime.seconds("2024:05:01 10:05:03")!!, 0.0)
+        // not dates
+        for (bad in listOf(null, "", "0000:00:00 00:00:00", "    :  :     :  :  ", "2024:06:31 10:00:00", "2024:13:01 10:00:00", "2024:05:01", "yesterday")) {
+            assertEquals(bad, null, ExifTime.seconds(bad))
+        }
+    }
+
     @Test fun sizesAndCounts() {
         val us = Locale.US
         assertEquals("999 B", Fmt.bytes(999, us))
@@ -117,6 +135,38 @@ class ParallelismTest {
         assertEquals(1, Parallelism.threads(8, -5, 10))
     }
 
+    @Test fun photosAreDecodedReducedByAPowerOfTwo() {
+        // the phones' usual sizes land between 960 and 1024 px in one step
+        assertEquals(4, Parallelism.sampleFor(4000))
+        assertEquals(4, Parallelism.sampleFor(4032))
+        assertEquals(4, Parallelism.sampleFor(4080))
+        assertEquals(8, Parallelism.sampleFor(8160))
+        assertEquals(2, Parallelism.sampleFor(2048))
+        assertEquals(2, Parallelism.sampleFor(1920))
+        // the others stay just above, and are reduced the rest of the way afterwards
+        assertEquals(4, Parallelism.sampleFor(6000))      // 1500 px
+        assertEquals(2, Parallelism.sampleFor(3264))      // 1632 px
+        assertEquals(1, Parallelism.sampleFor(1919))
+        assertEquals(1, Parallelism.sampleFor(1024))
+        assertEquals(1, Parallelism.sampleFor(1))
+        assertEquals(1, Parallelism.sampleFor(0))
+        // decoders that reduce by skipping pixels go half the way: the last halving averages
+        assertEquals(4, Parallelism.sampleFor(4032, "image/jpeg"))
+        assertEquals(4, Parallelism.sampleFor(4032, "image/webp"))
+        assertEquals(2, Parallelism.sampleFor(4032, "image/heic"))
+        assertEquals(2, Parallelism.sampleFor(4032, "image/heif"))
+        assertEquals(1, Parallelism.sampleFor(2400, "image/png"))
+        assertEquals(1, Parallelism.sampleFor(1000, "image/png"))
+        assertEquals(2, Parallelism.sampleFor(4032, null))
+        for (long in 1..40_000) {
+            val s = Parallelism.sampleFor(long)
+            assertEquals(1, Integer.bitCount(s))
+            // never below the smallest size a large photo is measured at, never twice more than needed
+            if (long >= ImageAnalysis.SMALLEST_REDUCED) assertTrue(long / s >= ImageAnalysis.SMALLEST_REDUCED)
+            assertTrue(long / s < 2 * ImageAnalysis.SMALLEST_REDUCED || s == 1)
+        }
+    }
+
     @Test fun stuckFilesAndHeat() {
         assertEquals(60_000L, Parallelism.stuckAfterMs(0))
         assertEquals(460_000L, Parallelism.stuckAfterMs(4_000_000_000L))       // a 4 GB video gets ~8 minutes
@@ -130,8 +180,8 @@ class ParallelismTest {
 class BudgetAndJournalTest {
     @Test fun decodingNeedsFollowTheFormat() {
         val mb = 1L shl 20
-        // a 12-megapixel JPEG is decoded at half size
-        assertEquals(12_000_000L / 4 * 4 + 4 * mb, Parallelism.decodeBytes("image/jpeg", "a.jpg", 4000, 3000))
+        // a 12-megapixel JPEG is decoded at a quarter of its size
+        assertEquals(12_000_000L / 16 * 4 + 4 * mb, Parallelism.decodeBytes("image/jpeg", "a.jpg", 4000, 3000))
         // HEIC is decoded whole, RAW developed whole
         assertTrue(Parallelism.decodeBytes("image/heic", "a.heic", 8160, 6120) > 290 * mb)
         assertTrue(Parallelism.decodeBytes("image/x-adobe-dng", "a.dng", 4000, 3000) > 270 * mb)
@@ -139,6 +189,8 @@ class BudgetAndJournalTest {
         // unknown size: as 12 megapixels
         assertEquals(Parallelism.decodeBytes("image/jpeg", "a.jpg", 4000, 3000), Parallelism.decodeBytes("image/jpeg", "a.jpg", 0, 0))
         assertTrue(Parallelism.decodeBytes("image/png", "s.png", 1080, 2400) < 16 * mb)
+        // a PNG is reduced only half the way while it is read
+        assertEquals(12_000_000L / 4 * 4 + 4 * mb, Parallelism.decodeBytes("image/png", "a.png", 4000, 3000))
     }
 
     @Test fun budgetNeverGivesOutMoreThanThereIs() {

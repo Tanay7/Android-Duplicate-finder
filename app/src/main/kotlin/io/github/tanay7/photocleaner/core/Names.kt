@@ -53,3 +53,31 @@ object Fmt {
     fun plural(n: Int, one: String, many: String, locale: Locale = Locale.getDefault()): String =
         "${count(n, locale)} ${if (n == 1) one else many}"
 }
+
+/** The moment a photo was taken, as its EXIF data tells it. */
+object ExifTime {
+    private val DATE = Regex("""^\s*(\d{4})\D(\d{1,2})\D(\d{1,2})\D+(\d{1,2})\D(\d{1,2})\D(\d{1,2})""")
+
+    /**
+     * Seconds since 1970 of "2024:05:01 10:05:03" read as the camera's own clock showed it (as if it
+     * were UTC), with the fraction of [subSec] ("25" is a quarter of a second). Null if it is no date.
+     *
+     * The camera's clock, not the instant: the difference between two shots of one camera is the
+     * same either way, a copy keeps the time of its original, and the time can be shown as it was
+     * where the photo was taken, whatever zone the phone is in now.
+     */
+    fun seconds(dateTime: String?, subSec: String? = null): Double? {
+        val m = DATE.find(dateTime ?: return null) ?: return null
+        val (y, mo, d, h, mi, sec) = m.destructured
+        val whole = try {
+            java.time.LocalDateTime.of(y.toInt(), mo.toInt(), d.toInt(), h.toInt(), mi.toInt(), minOf(sec.toInt(), 59))
+                .toEpochSecond(java.time.ZoneOffset.UTC)
+        } catch (_: Exception) {
+            return null         // "0000:00:00 00:00:00", the 31st of June
+        }
+        if (whole <= 0) return null
+        val digits = subSec?.trim().orEmpty()
+        val fraction = if (digits.isNotEmpty() && digits.length <= 9 && digits.all { it in '0'..'9' }) "0.$digits".toDouble() else 0.0
+        return whole + fraction
+    }
+}

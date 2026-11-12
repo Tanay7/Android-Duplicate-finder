@@ -17,7 +17,7 @@ class FeatureRow(
     /** Full-size pixels after rotation, 0 when unknown. */
     val width: Int,
     val height: Int,
-    /** Capture time from EXIF (seconds) and camera make and model, when the photo has them. */
+    /** Capture time from EXIF (seconds, by the camera's own clock: see ExifTime) and camera make and model, when the photo has them. */
     val takenAt: Double?,
     val camera: String?,
     /** Null when only the fingerprint was needed, or the photo couldn't be decoded. */
@@ -214,8 +214,11 @@ class FeatureCache(private val ctx: Context) : SQLiteOpenHelper(ctx, NAME, null,
     }
 
     companion object {
-        /** Raising this recomputes every cached fingerprint (the database version). */
-        const val ALGO = 2
+        /**
+         * Raising this recomputes every cached fingerprint (the database version). 3: photos are
+         * decoded at a power-of-two reduction, and capture times are the camera's own clock.
+         */
+        const val ALGO = 3
         private const val NAME = "features.db"
         private const val TAG = "PhotoCleaner"
     }

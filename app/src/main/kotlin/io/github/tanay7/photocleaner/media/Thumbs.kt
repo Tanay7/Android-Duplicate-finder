@@ -55,15 +55,35 @@ object Thumbs {
 
     fun cached(uri: Uri, px: Int): Bitmap? = cache.get("$uri@$px")
 
-    /** A photo decoded to fit within [maxSide], turned the way it is shown; null if it can't be read. */
+    /**
+     * A photo decoded to fit within [maxSide], turned the way it is shown; null if it can't be read.
+     * A photo more than twice too large is reduced by a power of two as it is decoded, then the rest
+     * of the way: sooner than the whole picture, and without the jagged detail of skipped pixels,
+     * which matters when two copies are compared for sharpness.
+     */
     fun full(cr: ContentResolver, uri: Uri, maxSide: Int): Bitmap? = try {
-        ImageDecoder.decodeBitmap(ImageDecoder.createSource(cr, uri)) { decoder, info, _ ->
+        var bmp = ImageDecoder.decodeBitmap(ImageDecoder.createSource(cr, uri)) { decoder, info, _ ->
             val long = max(info.size.width, info.size.height)
-            if (long > maxSide) {
+            var sample = 1
+            while (long / (sample * 2) >= maxSide) sample *= 2
+            if (sample > 1) {
+                decoder.setTargetSampleSize(sample)
+                decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+            } else if (long > maxSide) {
                 val s = maxSide.toDouble() / long
                 decoder.setTargetSize(max(1, (info.size.width * s).roundToInt()), max(1, (info.size.height * s).roundToInt()))
             }
         }
+        val long = max(bmp.width, bmp.height)
+        if (long > maxSide) {
+            val s = maxSide.toDouble() / long
+            val small = Bitmap.createScaledBitmap(bmp, max(1, (bmp.width * s).roundToInt()), max(1, (bmp.height * s).roundToInt()), true)
+            if (small !== bmp) {
+                bmp.recycle()
+                bmp = small
+            }
+        }
+        bmp
     } catch (_: Exception) {
         null
     } catch (_: OutOfMemoryError) {

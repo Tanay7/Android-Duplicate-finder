@@ -14,6 +14,7 @@ import android.provider.MediaStore
 import android.system.Os
 import android.system.OsConstants
 import io.github.tanay7.photocleaner.core.Budget
+import io.github.tanay7.photocleaner.core.ExifTime
 import io.github.tanay7.photocleaner.core.ImageAnalysis
 import io.github.tanay7.photocleaner.core.ImageFeatures
 import io.github.tanay7.photocleaner.core.Parallelism
@@ -63,8 +64,8 @@ object Analyzer {
 
     /**
      * Reads a photo, opening it once: its SHA-256 (streamed, never held in memory) and, if
-     * [wantFeatures], its EXIF capture time and camera and its pixels, decoded reduced to at most
-     * 1024 px (turned the way its EXIF data says, in sRGB) and measured. Failures come back in the
+     * [wantFeatures], its EXIF capture time and camera and its pixels, decoded reduced to 960-1024 px
+     * (turned the way its EXIF data says, in sRGB) and measured. Failures come back in the
      * row's error, except running out of memory, which the scanner answers by trying the file again
      * on its own.
      */
@@ -98,8 +99,9 @@ object Analyzer {
                 try {
                     Os.lseek(pfd.fileDescriptor, 0, OsConstants.SEEK_SET)
                     val exif = ExifInterface(FileInputStream(pfd.fileDescriptor))
-                    val t = exif.dateTimeOriginal
-                    if (t > 0) taken = t / 1000.0
+                    taken = ExifTime.seconds(
+                        exif.getAttribute(ExifInterface.TAG_DATETIME_ORIGINAL), exif.getAttribute(ExifInterface.TAG_SUBSEC_TIME_ORIGINAL),
+                    )
                     camera = listOfNotNull(exif.getAttribute(ExifInterface.TAG_MAKE), exif.getAttribute(ExifInterface.TAG_MODEL))
                         .joinToString(" ") { it.trim() }.trim().ifEmpty { null }
                 } catch (_: Exception) {
@@ -175,11 +177,10 @@ object Analyzer {
         val bmp = ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
             fullW = info.size.width
             fullH = info.size.height
-            val long = max(fullW, fullH)
-            if (long > ImageAnalysis.REDUCED_SIZE) {
-                val s = ImageAnalysis.REDUCED_SIZE.toDouble() / long
-                decoder.setTargetSize(max(1, (fullW * s).roundToInt()), max(1, (fullH * s).roundToInt()))
-            }
+            // Reduced by a power of two as it is decoded (the decoder's quick way), never to an
+            // arbitrary size (which it reaches by decoding everything and skipping pixels).
+            val sample = Parallelism.sampleFor(max(fullW, fullH), info.mimeType)
+            if (sample > 1) decoder.setTargetSampleSize(sample)
             decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
             // Phones save photos in a wider colour space; converted here once, the pixels come out as
             // plain sRGB without a conversion for every row that is read.
@@ -197,7 +198,8 @@ object Analyzer {
             var b = bmp
             val long = max(b.width, b.height)
             if (long > ImageAnalysis.REDUCED_SIZE) {
-                // A decoder that couldn't scale gave the whole picture: reduce it, so the buffers stay small.
+                // Still larger (a power of two didn't land in range, or the decoder couldn't reduce):
+                // the rest of the way, smoothly.
                 val s = ImageAnalysis.REDUCED_SIZE.toDouble() / long
                 b = Bitmap.createScaledBitmap(b, max(1, (b.width * s).roundToInt()), max(1, (b.height * s).roundToInt()), true)
                 held.add(b)

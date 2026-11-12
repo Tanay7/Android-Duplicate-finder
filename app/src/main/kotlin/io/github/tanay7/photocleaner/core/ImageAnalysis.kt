@@ -80,6 +80,12 @@ class Scratch {
 object ImageAnalysis {
     /** Photos are analysed reduced to at most this long side. */
     const val REDUCED_SIZE = 1024
+    /**
+     * ... and, when they are larger than that, to no less than this: a photo is reduced by a power
+     * of two where that lands between the two (see [Parallelism.sampleFor]), so every larger photo
+     * is measured at nearly the same scale, and blur means the same for all of them.
+     */
+    const val SMALLEST_REDUCED = 960
     const val HASH_BITS = 64
     /** Rows of pixels fetched at a time. */
     const val ROW_BLOCK = 32

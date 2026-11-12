@@ -19,6 +19,7 @@ import io.github.tanay7.photocleaner.media.Thumbs
 import io.github.tanay7.photocleaner.scan.ScanResult
 import java.text.DateFormat
 import java.util.Date
+import java.util.TimeZone
 
 /**
  * One member of a group at full size, to compare it with the others: swipe between them, pinch to
@@ -34,7 +35,8 @@ class ViewerScreen(
     private val main = Handler(Looper.getMainLooper())
     private var index = start
     private var overlays = true
-    private var loading: Int = -1
+    /** The member whose picture is wanted now; read by the loader threads, which skip what was swiped past. */
+    @Volatile private var loading: Int = -1
     private var full: Bitmap? = null
 
     private val image = ZoomImageView(ctx)
@@ -97,8 +99,16 @@ class ViewerScreen(
         val parts = ArrayList<String>()
         parts.add(Fmt.bytes(item.size))
         if (w > 0 && h > 0) parts.add("$w × $h")
-        val taken = row?.takenAt?.let { (it * 1000).toLong() } ?: item.takenMs.takeIf { it > 0 }
-        if (taken != null) parts.add(DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(taken)))
+        // The photo's own capture time is what the camera's clock showed: said as it is, whatever
+        // zone the phone is in now. Without one, the moment Android noted, in the phone's zone.
+        val shot = row?.takenAt
+        val when_ = DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT)
+        if (shot != null) {
+            when_.timeZone = TimeZone.getTimeZone("UTC")
+            parts.add(when_.format(Date((shot * 1000).toLong())))
+        } else if (item.takenMs > 0) {
+            parts.add(when_.format(Date(item.takenMs)))
+        }
         row?.features?.sharpness?.takeIf { !it.isNaN() }?.let { parts.add("sharpness ${it.toInt()}") }
         if (item.kind == MediaKind.VIDEO && item.durationMs > 0) parts.add(duration(item.durationMs))
         details.text = parts.joinToString(" · ")
@@ -113,6 +123,7 @@ class ViewerScreen(
         if (item.kind == MediaKind.VIDEO) {
             loading = i
             Thumbs.run {
+                if (loading != i) return@run
                 val bmp = try {
                     act.contentResolver.loadThumbnail(item.uri, android.util.Size(1024, 1024), null)
                 } catch (_: Exception) {
@@ -126,6 +137,7 @@ class ViewerScreen(
         val dm = act.resources.displayMetrics
         val side = maxOf(dm.widthPixels, dm.heightPixels).coerceAtMost(2560)
         Thumbs.run {
+            if (loading != i) return@run
             val bmp = Thumbs.full(act.contentResolver, item.uri, side)
             main.post {
                 if (loading != i || bmp == null) {
