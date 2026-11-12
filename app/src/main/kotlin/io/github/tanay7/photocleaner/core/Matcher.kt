@@ -31,6 +31,8 @@ class Item(
     val features: ImageFeatures?,
 ) {
     val pixels: Long get() = width.toLong() * height
+    /** The kind of file ("jpeg", "heif", "png" ...): see [CopyNames.format]. */
+    val format: String = CopyNames.format(path)
 }
 
 class MatchOptions(
@@ -152,7 +154,8 @@ class Group(
  * Linked files form groups (a file can join through another one). Within a group, files that are
  * surely the same picture, unedited, form a version; a mirrored or cropped copy, one with other
  * brightness or colours or that differs in part (a sticker, a caption, something removed: it may be a
- * deliberate edit, or another shot of the same scene) and a RAW file's JPEG twin are versions of
+ * deliberate edit, or another shot of the same scene), a RAW file's JPEG twin and the same photo in
+ * another format at the same size (unless one of the two is where originals are made) are versions of
  * their own. The best copy of every version is kept. Each other member is compared with the kept copy
  * of its version directly: pre-selected are only identical copies, sure look-alikes and burst frames
  * close to the kept shot; never a favourite, or a file that is only linked through another one.
@@ -204,6 +207,7 @@ class Matcher(private val items: List<Item>, private val o: MatchOptions = Match
         val sureFine = o.sureFine
         val raw = BooleanArray(n) { items[ph[it]].raw }
         parallel(n) { from, to, link ->
+            fun comparable(i: Int, j: Int) = raw[i] == raw[j] && sizeTells(items[ph[i]], items[ph[j]])
             for (i in from until to) {
                 val h = hashes[i]
                 val fi = f[i]
@@ -226,7 +230,7 @@ class Matcher(private val items: List<Item>, private val o: MatchOptions = Match
                     if (!colourOk(fi, fj)) continue
                     val fd = ImageAnalysis.fineDistance(fi.fine, fj.fine)
                     if (fd <= linkFine) {
-                        link(ph[i], ph[j], bits <= sureBits && fd <= sureFine && raw[i] == raw[j] && !edited(fi, fj) && samePlaces(j, -1))
+                        link(ph[i], ph[j], bits <= sureBits && fd <= sureFine && comparable(i, j) && !edited(fi, fj) && samePlaces(j, -1))
                     }
                 }
                 for (j in 0 until n) {
@@ -240,7 +244,7 @@ class Matcher(private val items: List<Item>, private val o: MatchOptions = Match
                         val fd = ImageAnalysis.fineDistance(fi.fine, if (v == 4) fj.cropFine else ImageAnalysis.fineVariant(fj.fine, v))
                         // Turned is the same picture; mirrored or cropped is a version of its own.
                         if (fd <= linkFine) {
-                            link(ph[i], ph[j], v < 3 && bits <= sureBits && fd <= sureFine && raw[i] == raw[j] && !edited(fi, fj) && samePlaces(j, v))
+                            link(ph[i], ph[j], v < 3 && bits <= sureBits && fd <= sureFine && comparable(i, j) && !edited(fi, fj) && samePlaces(j, v))
                         }
                     }
                 }
@@ -382,13 +386,15 @@ class Matcher(private val items: List<Item>, private val o: MatchOptions = Match
                 val rel = relation(f, keeper)
                 val edited = rel?.relation == Relation.LOOKALIKE && edited(r.features!!, items[keeper].features!!)
                 val turned = rel?.how == "mirrored" || rel?.how == "cropped"
-                val part = rel != null && rel.relation == Relation.LOOKALIKE && rel.sure && !edited && !turned && r.raw == items[keeper].raw
+                val plain = rel != null && rel.relation == Relation.LOOKALIKE && rel.sure && !edited && !turned && r.raw == items[keeper].raw
+                val part = plain && differsInPart(f, keeper, rel!!.turn)
                 val note = when {
                     r.raw != items[keeper].raw -> "The ${if (r.raw) "RAW" else "developed"} version of the photo: kept as well"
                     rel == null -> "Linked to the best copy only through another file: kept as well"
                     turned -> "A ${rel.how} version (it may be a deliberate edit): kept as well"
                     edited -> "Its brightness or colours differ from the best copy's (it may be an edit): kept as well"
                     part -> "Part of the picture differs from the best copy's (an edit, or another shot of the same scene): kept as well"
+                    plain && !sizeTells(r, items[keeper]) -> OTHER_FORMAT + ": kept as well"
                     else -> "It looks like the best copy but differs in the details: kept as well"
                 }
                 return@map Member(f, true, Relation.KEEP, rel?.score, rel?.how, null, false, flags, relSharp, note, frame, edited, version, part)
@@ -425,6 +431,9 @@ class Matcher(private val items: List<Item>, private val o: MatchOptions = Match
             if (relation != Relation.IDENTICAL && relation != Relation.VIA && r.raw != items[k].raw) {
                 suggest = false
                 note = "RAW and non-RAW versions of the same photo, so it isn't pre-selected"
+            } else if (relation == Relation.LOOKALIKE && suggest && !sizeTells(r, items[k])) {
+                suggest = false
+                note = "$OTHER_FORMAT, so it isn't pre-selected"
             }
             if (r.favorite) {
                 suggest = false
@@ -505,6 +514,17 @@ class Matcher(private val items: List<Item>, private val o: MatchOptions = Match
         return abs(a.cb - b.cb) + abs(a.cr - b.cr) > MatchOptions.EDIT_CHROMA
     }
 
+    /**
+     * True when the sizes of two look-alikes tell which is the better copy: one has more pixels, or
+     * they are files of one kind (the larger then holds more of the picture), or one of them is where
+     * originals are made (the camera's folder, the screenshots) and the other isn't.
+     *
+     * Not otherwise: of a HEIC photo and the JPEG made from it at the same size, the JPEG is the
+     * larger file and the worse copy; of a JPEG photo and a PNG made from it, the PNG is. Which of two
+     * such files came first can't be told, so neither is taken for the other's duplicate.
+     */
+    private fun sizeTells(a: Item, b: Item) = a.format == b.format || a.pixels != b.pixels || a.original != b.original
+
     private fun chooseKeeper(fids: List<Int>): Int {
         var pool = fids
         val favs = pool.filter { items[it].favorite }
@@ -516,9 +536,14 @@ class Matcher(private val items: List<Item>, private val o: MatchOptions = Match
                 // never outrank the full-size originals.
                 return frames.minWith(compareBy({ -quality(it) }, { -items[it].pixels }, { items[it].path }))
             }
+            // The largest picture. Among files of one kind, the largest file; among files of several
+            // kinds with as many pixels, the one from where originals are made comes first.
+            val most = pool.maxOf { items[it].pixels }
+            val mixed = pool.filter { items[it].pixels == most }.distinctBy { items[it].format }.size > 1
             return pool.minWith(
-                compareBy<Int>({ -items[it].pixels }, { -items[it].size }, { CopyNames.hasCopyMarker(items[it].path) },
-                    { !items[it].original }, { items[it].takenAt ?: Double.MAX_VALUE }, { items[it].added }, { items[it].path }),
+                compareBy<Int>({ -items[it].pixels }, { mixed && !items[it].original }, { -items[it].size },
+                    { CopyNames.hasCopyMarker(items[it].path) }, { !items[it].original }, { items[it].takenAt ?: Double.MAX_VALUE },
+                    { items[it].added }, { items[it].path }),
             )
         }
         return pool.minWith(
@@ -648,6 +673,7 @@ class Matcher(private val items: List<Item>, private val o: MatchOptions = Match
 
     companion object {
         private val VARIANT_NAMES = arrayOf("rotated", "rotated", "rotated", "mirrored")
+        private const val OTHER_FORMAT = "The same photo in another format at the same size (which of the two is the original can't be told)"
         /** Marks, in a buffered pair, that the two are the same version (item numbers stay below it). */
         private const val SAME = 1 shl 30
     }

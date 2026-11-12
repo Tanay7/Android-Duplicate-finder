@@ -83,6 +83,20 @@ class NamesTest {
         }
     }
 
+    @Test fun kindsOfPictureFile() {
+        assertEquals("jpeg", CopyNames.format("DCIM/Camera/IMG_1.JPG"))
+        assertEquals("jpeg", CopyNames.format("a.jpeg"))
+        assertEquals("heif", CopyNames.format("Pictures/IMG_2.HEIC"))
+        assertEquals("heif", CopyNames.format("b.heif"))
+        assertEquals("png", CopyNames.format("Pictures/Screenshots/s.png"))
+        assertEquals("raw", CopyNames.format("DCIM/Camera/IMG_3.dng"))
+        assertEquals("raw", CopyNames.format("x.CR2"))
+        assertEquals("webp", CopyNames.format("x.webp"))
+        assertEquals("tiff", CopyNames.format("scan.tif"))
+        assertEquals("", CopyNames.format("Pictures/no-extension"))
+        assertEquals("", CopyNames.format("Pictures/folder.with.dots/name"))
+    }
+
     @Test fun originalFolders() {
         assertTrue(CopyNames.isOriginalFolder("DCIM/Camera/"))
         assertTrue(CopyNames.isOriginalFolder("DCIM"))

@@ -26,6 +26,19 @@ object CopyNames {
     fun isRaw(path: String): Boolean = path.substringAfterLast('.', "").lowercase(Locale.ROOT) in RAW
 
     /**
+     * The kind of picture file, by its name: "jpeg", "heif", "png", "raw" ... Only files of one kind
+     * can be compared by their size: a HEIC photo is half the size of the JPEG made from it, and no
+     * worse.
+     */
+    fun format(path: String): String = when (val ext = path.substringAfterLast('/').substringAfterLast('.', "").lowercase(Locale.ROOT)) {
+        "jpg", "jpeg", "jpe", "jfif" -> "jpeg"
+        "heic", "heif", "hif" -> "heif"
+        "tif", "tiff" -> "tiff"
+        in RAW -> "raw"
+        else -> ext
+    }
+
+    /**
      * Folders where phones create originals: the camera (DCIM), screenshots and screen recordings.
      * A copy there is kept before one that was saved, downloaded or shared elsewhere.
      */

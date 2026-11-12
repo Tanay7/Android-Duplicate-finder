@@ -111,6 +111,13 @@ What this can't see: a change that leaves every cell's average as it was, such a
 blurred, pixelated or retouched, or a line a few pixels thin. Such a copy still counts as a
 duplicate, so look at what is ticked before you move it if you make edits like that.
 
+**Two formats.** Of two copies with as many pixels, the larger file is the better one only if both
+are files of one kind. A HEIC photo is half the size of the JPEG made from it, and the JPEG is the
+copy: "keep the larger file" would keep the conversion and tick the original. So between two
+formats at the same size, the copy from where originals are made (the camera's folder, the
+screenshots) is kept and the other ticked; where that doesn't tell them apart, both are kept and
+you decide. A smaller copy goes whatever its format.
+
 **What is ticked for you** is only what is sure:
 
 - identical copies;
@@ -120,7 +127,8 @@ duplicate, so look at what is ticked before you move it if you make edits like t
 
 **Never ticked for you:**
 
-- the best copy of any version: the original, an edit, a crop, the RAW file, its JPEG;
+- the best copy of any version: the original, an edit, a crop, the RAW file, its JPEG, the same
+  photo in another format when it can't be told which is the original;
 - favourites;
 - a file that only matches another member of its group, not the copy kept;
 - a file you unticked before: what you keep by hand stays kept in every later scan.
@@ -217,7 +225,7 @@ this key: it is only fit for sideloading your own builds. Use a private key for 
 
 | What | How |
 |---|---|
-| JVM tests (77): perceptual hashes and fine fingerprints of synthetic photos (resized, saved again, turned, mirrored, cropped, grey), blur, noise, exposure, brightness and contrast measures, the median filter against a naive one, reused per-thread buffers giving the same answers as fresh ones; the grid of local brightness and colour (re-saves keep it, a sticker, a caption or a shift doesn't, turned copies are compared turned); every grouping and keep rule (identical, look-alike, turned, mirrored, cropped, edited, edited in part, RAW twins, versions that each keep their best copy, linked through another file, bursts, RAW and JPEG bursts, their copies and far frames, colour, favourites, flat pictures, videos, poor shots, matching on many threads, stopping and progress); 60 different text pages and 40 app screens that a pHash confuses must never be grouped, nor pages photographed one after the other be a burst; the thread count, the power-of-two reduction photos are decoded at, capture times, time limits, heat rules, the decoders' memory budget (also with a decoder that hangs) and the crash journal; what is ticked in the results, what is remembered, and that the last copy of a picture or of a version never stays ticked; the folder tree, tick boxes and how new folders are treated; copy names and sizes | `./gradlew testDebugUnitTest` |
+| JVM tests (79): perceptual hashes and fine fingerprints of synthetic photos (resized, saved again, turned, mirrored, cropped, grey), blur, noise, exposure, brightness and contrast measures, the median filter against a naive one, reused per-thread buffers giving the same answers as fresh ones; the grid of local brightness and colour (re-saves keep it, a sticker, a caption or a shift doesn't, turned copies are compared turned); every grouping and keep rule (identical, look-alike, turned, mirrored, cropped, edited, edited in part, RAW twins, the same photo in two formats, versions that each keep their best copy, linked through another file, bursts, RAW and JPEG bursts, their copies and far frames, colour, favourites, flat pictures, videos, poor shots, matching on many threads, stopping and progress); 60 different text pages and 40 app screens that a pHash confuses must never be grouped, nor pages photographed one after the other be a burst; the thread count, the power-of-two reduction photos are decoded at, capture times, time limits, heat rules, the decoders' memory budget (also with a decoder that hangs) and the crash journal; what is ticked in the results, what is remembered, and that the last copy of a picture or of a version never stays ticked; the folder tree, tick boxes and how new folders are treated; copy names and sizes | `./gradlew testDebugUnitTest` |
 | On-device test on Android 16 and 17 emulators: copies test photos to the phone (`scripts/make_test_photos.py`), including five document pages photographed 2 s apart and two settings screens that a pHash takes for a burst and for look-alikes, an edited version with a copy of its own, a copy with a sticker on it, a truncated photo, a text file with a photo's name and an 8000 px panorama; scans three different sets of folders and checks every group found, what is ticked and what is left alone, and the broken files reported; moves the ticked files to the trash through the real button and Android's own dialog, checks the media index, undoes it; has Android close the app while its results are open and checks they come back; with a test build that dies on purpose while reading one photo, checks that the photo is left out by the third scan; rotates, and runs 15,000 random GUI events (monkey); fails on any wrong result, crash or ANR | `scripts/device-test.sh` (CI) |
 | Static analysis: Android lint | `./gradlew lintDebug` |
 

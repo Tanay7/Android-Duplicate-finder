@@ -263,6 +263,58 @@ class MatcherTest {
         assertTrue(match(items.drop(1)).single().members.first { !it.keeper }.suggestTrash)
     }
 
+    @Test fun theSamePhotoInTwoFormatsIsNotJudgedBySize() {
+        val h = far()
+        // a HEIC photo from the camera and the JPEG made from it: the JPEG is twice the file, and the copy
+        val converted = listOf(
+            photo("DCIM/Camera/IMG_9.heic", feat(h), size = 2_500_000),
+            photo("Pictures/Converted/IMG_9.jpg", feat(h), size = 5_000_000),
+        )
+        var g = match(converted).single()
+        assertEquals(0, g.keeper)
+        assertTrue(g.members.first { it.item == 1 }.suggestTrash)
+        // a screenshot and the JPEG a chat app made of it, at the same size
+        val shared = listOf(
+            photo("Pictures/WhatsApp/IMG-1.jpg", feat(h), size = 200_000, w = 1080, h = 2400),
+            photo("Pictures/Screenshots/Screenshot_1.png", feat(h), size = 900_000, w = 1080, h = 2400),
+        )
+        g = match(shared).single()
+        assertEquals(1, g.keeper)
+        assertTrue(g.members.first { it.item == 0 }.suggestTrash)
+        // both somewhere else: which is the original can't be told, so both are kept
+        val imported = listOf(
+            photo("Pictures/iPhone/IMG_9.HEIC", feat(h), size = 2_500_000),
+            photo("Pictures/iPhone/IMG_9.jpg", feat(h), size = 5_000_000),
+        )
+        g = match(imported).single()
+        assertTrue(g.members.all { it.keeper })
+        assertTrue(g.members.none { it.suggestTrash })
+        assertTrue(g.members.first { it.version == 1 }.note!!.contains("another format"))
+        // ... while a smaller copy of either still goes, whatever its format
+        val withCopies = imported + photo("Pictures/WhatsApp/IMG_9.jpg", feat(flip(h, 1)), size = 300_000, w = 1600, h = 1200) +
+            photo("Pictures/WhatsApp/IMG_9.webp", feat(flip(h, 2)), size = 100_000, w = 800, h = 600)
+        g = match(withCopies).single()
+        assertEquals(setOf(2, 3), g.members.filter { it.suggestTrash }.map { it.item }.toSet())
+        val heic = g.members.first { it.item == 0 }
+        val jpeg = g.members.first { it.item == 1 }
+        assertTrue(heic.keeper != jpeg.keeper || (heic.keeper && jpeg.keeper))
+        assertFalse(heic.suggestTrash || jpeg.suggestTrash)
+        // files of one kind are judged by size as before: the less compressed one stays
+        val same = listOf(
+            photo("Pictures/a.jpeg", feat(h), size = 2_000_000),
+            photo("Pictures/b.JPG", feat(h), size = 5_000_000),
+        )
+        g = match(same).single()
+        assertEquals(1, g.keeper)
+        assertTrue(g.members.first { it.item == 0 }.suggestTrash)
+        // two files from where originals are made, of two kinds: no telling either
+        val both = listOf(
+            photo("DCIM/Camera/IMG_9.heic", feat(h), size = 2_500_000),
+            photo("DCIM/Camera/IMG_9.jpg", feat(h), size = 5_000_000),
+        )
+        assertTrue(match(both).single().members.none { it.suggestTrash })
+    }
+
     @Test fun aBurstSavedAsRawAndJpegKeepsTheSharpestOfEach() {
         val h = far()
         val detail = listOf(60f, 120f, 90f)
