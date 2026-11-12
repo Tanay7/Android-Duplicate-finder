@@ -71,7 +71,7 @@ jobs:
           python-version: "3.12"
       - name: Test photos (copies, look-alikes, a burst, document pages, screens, broken files)
         run: |
-          python -m pip install --quiet pillow
+          python -m pip install --quiet pillow pillow-heif
           python scripts/make_test_photos.py testdata
           find testdata -type f | sort
       - name: Enable KVM

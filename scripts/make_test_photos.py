@@ -19,6 +19,8 @@ Pictures/Night/dark.jpg           a very dark shot from a camera               -
 Pictures/Big/panorama.jpg         8000 x 2000 px, read reduced to an eighth    -> kept
 Pictures/Big/panorama_small.jpg   the panorama at a quarter of its size        -> its copy (read reduced to half)
 Pictures/Big/panorama.webp        the panorama in another format, as large     -> not ticked: no telling which is the original
+DCIM/Imports/IMG_0002.heic        a 12-megapixel HEIC photo from a camera      -> kept (written only where pillow-heif is installed)
+Pictures/Converted/IMG_0002.jpg   the JPEG made from it: as large, a bigger file -> its copy, although it is the larger file
 Pictures/Broken/truncated.jpg     the first 6 KB of a photo                    -> can't be decoded
 Pictures/Broken/not-a-photo.jpg   text with a photo's name                     -> can't be decoded
 Pictures/CrashTest/*.jpg          3 photos; a test build of the app dies on purpose when it reads
@@ -126,6 +128,23 @@ def exif(when, make="TestCam", model="One"):
     return e
 
 
+def save_heic(im, out, rel, quality=90, ex=None):
+    """Writes a HEIC, the format most phones save their photos in. False where the encoder isn't installed."""
+    try:
+        import pillow_heif
+        pillow_heif.register_heif_opener()
+    except Exception as e:  # the test goes on without the HEIC cases
+        print(f"no HEIC test photo ({type(e).__name__}: {e})")
+        return False
+    path = os.path.join(out, rel)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    kw = {"quality": quality}
+    if ex is not None:
+        kw["exif"] = ex.tobytes()
+    im.save(path, **kw)
+    return True
+
+
 def save(im, out, rel, quality=92, ex=None):
     path = os.path.join(out, rel)
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -174,6 +193,12 @@ def main(out):
     save(pano, out, "Pictures/Big/panorama.jpg", quality=80)
     save(pano.resize((2000, 500), Image.LANCZOS), out, "Pictures/Big/panorama_small.jpg", quality=80)
     pano.save(os.path.join(out, "Pictures/Big/panorama.webp"), "WEBP", quality=80)
+
+    # A HEIC photo is half the size of the JPEG made from it: of the two, the HEIC from the camera
+    # is the one to keep, although the JPEG is the larger file.
+    phone = scene(12, 4000, 3000)
+    if save_heic(phone, out, "DCIM/Imports/IMG_0002.heic", ex=exif("2024:05:03 09:00:00")):
+        save(phone, out, "Pictures/Converted/IMG_0002.jpg", quality=92)
 
     broken = os.path.join(out, "Pictures/Broken")
     os.makedirs(broken, exist_ok=True)

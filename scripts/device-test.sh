@@ -155,21 +155,41 @@ fi
 echo "== everything is ticked"
 r=$(scan '*'); echo "$r"
 sleep 1   # the lines for each group follow the result
-expect "$r" photos 29
+group() { grep ' GROUP lookalike ' logcat.txt | grep "$1" | tail -1; }   # the latest look-alike group with that file
+# The HEIC photo and the JPEG made from it (only where the test photos include them, and this
+# Android can decode HEIC: otherwise the HEIC is one more file reported as not decodable).
+HEIC=0; HEICPAIR=0
+[ -f "$DATA/DCIM/Imports/IMG_0002.heic" ] && HEIC=1
+UNDECODABLE=2                      # the truncated photo and the text file: reported, not fatal
+if [ $HEIC = 1 ]; then
+  if [ "$(field "$r" undecodable)" = 3 ]; then
+    UNDECODABLE=3; echo "(this Android can't decode the HEIC test photo: its checks are skipped)"
+  else
+    HEICPAIR=1
+  fi
+fi
+expect "$r" photos $((29 + 2 * HEIC))
 expect "$r" videos $((2 * VIDEOS))
-expect "$r" groups $((4 + VIDEOS))
-expect "$r" lookalike 2
+expect "$r" groups $((4 + HEICPAIR + VIDEOS))
+expect "$r" lookalike $((2 + HEICPAIR))
 expect "$r" bursts 1
 expect "$r" poor 1
 expect "$r" videogroups $VIDEOS
-expect "$r" undecodable 2          # the truncated photo and the text file: reported, not fatal
+expect "$r" undecodable $UNDECODABLE
 expect "$r" unreadable 0
 expect "$r" quarantined 0
 [ "$(field "$r" threads)" -ge 1 ] && ok "read on $(field "$r" threads) threads, $(field "$r" cores) cores" || fail "no thread count"
-PHOTOS_TICKED=10                   # 4 copies of the original, the edit's small copy, the panorama's, 4 burst frames
+# 4 copies of the original, the edit's small copy, the panorama's, 4 burst frames, the JPEG made from the HEIC
+PHOTOS_TICKED=$((10 + HEICPAIR))
 TICKED=$((PHOTOS_TICKED + VIDEOS))
 expect "$r" suggested $TICKED
-group() { grep ' GROUP lookalike ' logcat.txt | grep "$1" | tail -1; }   # the latest look-alike group with that file
+if [ $HEICPAIR = 1 ]; then
+  # the JPEG is the larger file, and the copy: the camera's HEIC is the one to keep
+  group IMG_0002 | grep -q 'KEEP:DCIM/Imports/IMG_0002.heic' &&
+    ok "the HEIC photo from the camera is kept" || fail "the HEIC photo isn't the kept copy: $(group IMG_0002)"
+  group IMG_0002 | grep -q 'TRASH:Pictures/Converted/IMG_0002.jpg' &&
+    ok "the larger JPEG made from it goes" || fail "the JPEG made from the HEIC photo isn't ticked: $(group IMG_0002)"
+fi
 group IMG_0001 | grep -q 'KEEP:DCIM/Camera/IMG_0001.jpg' &&
   ok "the camera original is kept" || fail "the camera original isn't the kept copy"
 group IMG_0001 | grep -q 'TRASH:Pictures/Edited/turned.jpg' &&
@@ -221,6 +241,7 @@ if tap "^Move $TICKED to trash$"; then
   echo "$after" | grep -qx 'DCIM/Camera/IMG_0001.jpg' && ok "the kept original is still there" || fail "the kept original is gone"
   echo "$after" | grep -qx 'Pictures/Edited/brighter.jpg' && ok "the kept edit is still there" || fail "the kept edit is gone"
   echo "$after" | grep -qx 'Pictures/Edited/sticker.jpg' && ok "the copy with a sticker is still there" || fail "the copy with a sticker is gone"
+  [ $HEIC = 0 ] || { echo "$after" | grep -qx 'DCIM/Imports/IMG_0002.heic' && ok "the HEIC photo is still there" || fail "the HEIC photo is gone"; }
   echo "$after" | grep -qx 'Download/IMG_0001 (1).jpg' && fail "the copy is still there" || ok "the copy is gone"
   if tap '^Undo$'; then
     sleep 3
@@ -251,8 +272,8 @@ else
     ok "the results came back after Android closed the app"
     # ... the same ones: nothing is read again, and what is known about each photo comes from the cache
     rr=$(grep ' RESULT ' logcat.txt | tail -1); rr=${rr#*RESULT }; echo "$rr"
-    expect "$rr" photos 29
-    expect "$rr" lookalike 2
+    expect "$rr" photos $((29 + 2 * HEIC))
+    expect "$rr" lookalike $((2 + HEICPAIR))
     expect "$rr" suggested $TICKED
   else
     fail "the results didn't come back after Android closed the app"
