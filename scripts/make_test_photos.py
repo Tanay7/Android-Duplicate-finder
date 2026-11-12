@@ -11,9 +11,13 @@ Pictures/Edited/turned.jpg        the photo turned a quarter, saved again      -
 DCIM/Camera/BURST_0[1-5].jpg      5 shots a second apart while panning; the 3rd is blurred -> burst
 Pictures/Other/*.jpg, *.png       unrelated photos                             -> nothing
 Pictures/Night/dark.jpg           a very dark shot                             -> blurry or dark
+Pictures/Big/panorama.jpg         8000 x 2000 px                               -> nothing (read reduced)
+Pictures/Broken/truncated.jpg     the first 6 KB of a photo                    -> can't be decoded
+Pictures/Broken/not-a-photo.jpg   text with a photo's name                     -> can't be decoded
 
 Expected from a scan of everything: one look-alike group of 5 (the camera original kept, 4 ticked),
-one burst of 5 (a sharp frame kept, 4 ticked) and the dark shot listed on its own.
+one burst of 5 (a sharp frame kept, 4 ticked) and the dark shot listed on its own; the broken files
+are reported, and stop nothing.
 """
 import os
 import random
@@ -87,6 +91,16 @@ def main(out):
     save(scene(4, 1024, 768), out, "Pictures/Other/diagram.png")
     save(scene(5), out, "Pictures/Other/street.jpg", ex=exif("2024:06:01 12:00:00", "OtherCam", "Two"))
     save(ImageEnhance.Brightness(scene(6)).enhance(0.12), out, "Pictures/Night/dark.jpg")
+    save(scene(7, 8000, 2000), out, "Pictures/Big/panorama.jpg", quality=80)
+
+    broken = os.path.join(out, "Pictures/Broken")
+    os.makedirs(broken, exist_ok=True)
+    with open(orig, "rb") as f:
+        head = f.read(6000)
+    with open(os.path.join(broken, "truncated.jpg"), "wb") as f:
+        f.write(head)
+    with open(os.path.join(broken, "not-a-photo.jpg"), "w") as f:
+        f.write("This is a text file with a photo's name.\n" * 50)
 
 
 if __name__ == "__main__":

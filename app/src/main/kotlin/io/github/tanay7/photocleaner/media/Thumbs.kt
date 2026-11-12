@@ -42,8 +42,8 @@ object Thumbs {
             if (wanted[view] != key) return@execute
             val bmp = try {
                 cr.loadThumbnail(uri, Size(px, px), null)
-            } catch (_: Exception) {
-                null
+            } catch (_: Throwable) {
+                null       // unreadable, or no memory for it right now: show the placeholder
             }
             if (bmp != null) cache.put(key, bmp)
             main.post {
@@ -75,5 +75,12 @@ object Thumbs {
         for (k in cache.snapshot().keys) if (k.startsWith(prefix)) cache.remove(k)
     }
 
-    fun run(task: Runnable) = exec.execute(task)
+    /** Runs [task] on the loader threads; nothing it throws can take the app down. */
+    fun run(task: Runnable) = exec.execute {
+        try {
+            task.run()
+        } catch (t: Throwable) {
+            android.util.Log.w("PhotoCleaner", "Background task failed", t)
+        }
+    }
 }

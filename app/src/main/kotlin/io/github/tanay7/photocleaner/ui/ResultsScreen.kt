@@ -17,6 +17,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ListView
 import io.github.tanay7.photocleaner.MainActivity
+import io.github.tanay7.photocleaner.Prefs
 import io.github.tanay7.photocleaner.R
 import io.github.tanay7.photocleaner.core.Flag
 import io.github.tanay7.photocleaner.core.Fmt
@@ -25,6 +26,7 @@ import io.github.tanay7.photocleaner.core.GroupType
 import io.github.tanay7.photocleaner.core.MediaKind
 import io.github.tanay7.photocleaner.core.Member
 import io.github.tanay7.photocleaner.core.Relation
+import io.github.tanay7.photocleaner.media.MediaIndex
 import io.github.tanay7.photocleaner.scan.Category
 import io.github.tanay7.photocleaner.scan.ScanResult
 import kotlin.math.roundToInt
@@ -286,8 +288,11 @@ class ResultsScreen(act: MainActivity, private val r: ScanResult) : Screen(act) 
         setOnClickListener { onClick() }
     }
 
-    private fun toggle(item: Int) {
-        if (!r.selected.remove(item)) r.selected.add(item)
+    private fun toggle(item: Int) = tick(mapOf(item to (item !in r.selected)))
+
+    /** Ticks by hand: remembered for later scans too (null: back to the suggestion). */
+    private fun tick(changes: Map<Int, Boolean?>) {
+        Prefs.setOverrides(ctx, r.tick(changes))
         refresh()
     }
 
@@ -342,15 +347,9 @@ class ResultsScreen(act: MainActivity, private val r: ScanResult) : Screen(act) 
             }
             val suggest = live.filter { it.suggestTrash }
             keepBest.visibility = if (g.type == GroupType.POOR || suggest.isEmpty()) View.GONE else View.VISIBLE
-            keepBest.setOnClickListener {
-                for (m in live) if (m.suggestTrash) r.selected.add(m.item) else r.selected.remove(m.item)
-                refresh()
-            }
+            keepBest.setOnClickListener { tick(live.associate { it.item to null }) }
             keepAll.text = if (g.type == GroupType.POOR) "Untick all" else "Keep all"
-            keepAll.setOnClickListener {
-                for (m in live) r.selected.remove(m.item)
-                refresh()
-            }
+            keepAll.setOnClickListener { tick(live.associate { it.item to false }) }
             showAll.visibility = if (live.size > 6) View.VISIBLE else View.GONE
             showAll.setOnClickListener { act.push(GroupScreen(act, r, g)) }
         }
@@ -363,38 +362,79 @@ class ResultsScreen(act: MainActivity, private val r: ScanResult) : Screen(act) 
 
     // -- trash -----------------------------------------------------------------------------------
 
+    /** True while a trash request is being prepared or shown: one at a time. */
+    private var busy = false
+
     private fun trashSelected() {
+        if (busy) return
         val sel = selectedLive()
         if (sel.isEmpty()) return
-        // Every copy of something ticked: say so before it all goes.
-        val whole = r.groups.filter { g -> g.type != GroupType.POOR && r.shown(g) && r.live(g).all { it.item in r.selected } }
-        if (whole.isNotEmpty()) {
-            AlertDialog.Builder(ctx)
-                .setTitle("Every copy is ticked")
-                .setMessage("In ${Fmt.plural(whole.size, "group", "groups")}, every copy is ticked, so none would be left outside the trash. Move them anyway?")
-                .setPositiveButton("Move anyway") { _, _ -> trash(sel) }
-                .setNegativeButton("Cancel", null)
-                .show()
-            return
+        busy = true
+        ui.enable(trashButton, false)
+        // Files deleted or moved by another app since the scan would make Android refuse the batch.
+        Bg.run({ MediaIndex.existing(ctx, sel.map { r.items[it] }) }) { present ->
+            busy = false
+            if (present == null) {
+                act.toast("Couldn't check the files. Try again.")
+                refresh()
+                return@run
+            }
+            val left = sel.filter { r.items[it].key in present }
+            gone(sel.filter { r.items[it].key !in present })
+            if (left.isEmpty()) {
+                refresh()
+                return@run
+            }
+            // Every copy of something ticked: say so before it all goes.
+            val whole = r.groups.filter { g -> g.type != GroupType.POOR && r.shown(g) && r.live(g).all { it.item in r.selected } }
+            if (whole.isNotEmpty()) {
+                AlertDialog.Builder(ctx)
+                    .setTitle("Every copy is ticked")
+                    .setMessage("In ${Fmt.plural(whole.size, "group", "groups")}, every copy is ticked, so none would be left outside the trash. Move them anyway?")
+                    .setPositiveButton("Move anyway") { _, _ -> trash(left) }
+                    .setNegativeButton("Cancel", null)
+                    .setOnDismissListener { refresh() }
+                    .show()
+                return@run
+            }
+            trash(left)
         }
-        trash(sel)
+    }
+
+    /** Files that left the phone without this app: shown as gone, never acted on. */
+    private fun gone(items: List<Int>) {
+        if (items.isEmpty()) return
+        r.trashed.addAll(items)
+        r.selected.removeAll(items.toSet())
+        act.mediaChanged = true
+        act.toast(if (items.size == 1) "1 file was already gone" else "${Fmt.count(items.size)} files were already gone")
     }
 
     /** In batches: one confirmation can only carry so many files. */
     private fun trash(items: List<Int>) {
+        busy = true
         val chunks = items.chunked(BATCH)
-        val moved = ArrayList<Int>()
+        val asked = ArrayList<Int>()
+        fun finish() {
+            // What Android really did: a file still listed wasn't moved, whatever the answer said.
+            Bg.run({ MediaIndex.existing(ctx, asked.map { r.items[it] }) }) { present ->
+                busy = false
+                val moved = if (present == null) asked else asked.filter { r.items[it].key !in present }
+                trashed(moved)
+                refresh()
+            }
+        }
         fun next(k: Int) {
             if (k == chunks.size) {
-                trashed(moved)
+                finish()
                 return
             }
             act.requestTrash(chunks[k].map { r.items[it].uri }, true) { ok ->
                 if (ok) {
-                    moved.addAll(chunks[k])
+                    asked.addAll(chunks[k])
                     next(k + 1)
                 } else {
-                    trashed(moved)
+                    finish()
                 }
             }
         }
@@ -409,19 +449,44 @@ class ResultsScreen(act: MainActivity, private val r: ScanResult) : Screen(act) 
         val bytes = moved.sumOf { r.items[it].size }
         undoText.text = "${Fmt.plural(moved.size, "file", "files")} moved to the trash · ${Fmt.bytes(bytes)} freed"
         undoBar.visibility = View.VISIBLE
-        refresh()
     }
 
     private fun undo() {
         val items = lastTrashed
-        if (items.isEmpty()) return
+        if (items.isEmpty() || busy) return
+        busy = true
         act.requestTrash(items.map { r.items[it].uri }, false) { ok ->
-            if (!ok) return@requestTrash
-            r.trashed.removeAll(items.toSet())
-            lastTrashed = emptyList()
-            act.mediaChanged = true
-            undoBar.visibility = View.GONE
-            refresh()
+            if (!ok) {
+                busy = false
+                return@requestTrash
+            }
+            Bg.run({ MediaIndex.existing(ctx, items.map { r.items[it] }) }) { present ->
+                busy = false
+                val back = if (present == null) items else items.filter { r.items[it].key in present }
+                r.trashed.removeAll(back.toSet())
+                lastTrashed = emptyList()
+                act.mediaChanged = true
+                undoBar.visibility = View.GONE
+                refresh()
+            }
+        }
+    }
+
+    /**
+     * Back in the app: ticked files may have been deleted elsewhere meanwhile (or an answer from
+     * Android lost when the screen was rebuilt). Those are shown as gone.
+     */
+    override fun onResumed() {
+        if (busy) return
+        val sel = selectedLive()
+        if (sel.isEmpty()) return
+        Bg.run({ MediaIndex.existing(ctx, sel.map { r.items[it] }) }) { present ->
+            if (present == null || busy) return@run
+            val missing = sel.filter { r.items[it].key !in present && it !in r.trashed }
+            if (missing.isNotEmpty()) {
+                gone(missing)
+                refresh()
+            }
         }
     }
 
@@ -437,14 +502,16 @@ class GroupScreen(act: MainActivity, private val r: ScanResult, private val g: G
     private val tilePx = ui.dp(104)
     private val tiles = Tiles(act, r, tilePx, { gr, m ->
         act.push(ViewerScreen(act, r, gr, live, live.indexOf(m).coerceAtLeast(0)))
-    }, { item ->
-        if (!r.selected.remove(item)) r.selected.add(item)
-        refresh()
-    })
+    }, { item -> tick(mapOf(item to (item !in r.selected))) })
     private val bar = ui.topBar(Words.groupTitle(g, live.size), null, { act.pop() },
-        ui.button("Tick all", Ui.Style.TEXT) { live.forEach { if (!it.keeper) r.selected.add(it.item) }; refresh() },
-        ui.button("None", Ui.Style.TEXT) { live.forEach { r.selected.remove(it.item) }; refresh() },
+        ui.button("Tick all", Ui.Style.TEXT) { tick(live.filter { !it.keeper }.associate { it.item to true }) },
+        ui.button("None", Ui.Style.TEXT) { tick(live.associate { it.item to false }) },
     )
+
+    private fun tick(changes: Map<Int, Boolean?>) {
+        Prefs.setOverrides(ctx, r.tick(changes))
+        refresh()
+    }
     private val adapter = object : BaseAdapter() {
         override fun getCount() = live.size
         override fun getItem(position: Int) = live[position]

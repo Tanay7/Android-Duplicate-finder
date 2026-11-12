@@ -1,7 +1,5 @@
 package io.github.tanay7.photocleaner.core
 
-import java.util.concurrent.Callable
-import java.util.concurrent.Executors
 import kotlin.math.abs
 import kotlin.math.min
 
@@ -45,6 +43,7 @@ class MatchOptions(
     val blurCutoff: Float = 45f,
     val darkCutoff: Float = 40f,
     val clipCutoff: Float = 25f,
+    /** Threads for comparing every pair of photos: all cores, the calling thread included. */
     val threads: Int = 1,
 ) {
     companion object {
@@ -389,37 +388,62 @@ class Matcher(private val items: List<Item>, private val o: MatchOptions = Match
     }
 
     /**
-     * Runs [body] over 0 until n in chunks, on [MatchOptions.threads] threads; each chunk reports its
-     * pairs through `link`, which joins them under a lock (no list of every pair is ever kept).
+     * Runs [body] over 0 until n on [MatchOptions.threads] threads, the calling one included. Chunks
+     * are handed out one at a time from a shared counter, so faster cores (of a big.LITTLE CPU) take
+     * more of them and every core stays busy until the end. Each chunk reports its pairs through
+     * `link`, which joins them under a lock: no list of every pair is ever kept.
      */
     private fun parallel(n: Int, body: (from: Int, to: Int, link: (Int, Int) -> Unit) -> Unit) {
         val lock = Any()
-        val threads = o.threads.coerceIn(1, 16)
-        if (threads == 1 || n < 1000) {
+        val threads = o.threads.coerceIn(1, 64)
+        if (threads == 1 || n < 256) {
             body(0, n) { a, b -> uf.union(a, b) }
             return
         }
-        val pool = Executors.newFixedThreadPool(threads)
-        try {
-            // Rows near the end are shorter (j > i): many chunks keep the threads evenly busy.
-            val chunks = threads * 16
-            val tasks = (0 until chunks).map { c ->
-                Callable {
-                    val buf = IntArray(2048)
-                    var k = 0
-                    val flush = { synchronized(lock) { var p = 0; while (p < k) { uf.union(buf[p], buf[p + 1]); p += 2 } }; k = 0 }
-                    body(c * n / chunks, (c + 1) * n / chunks) { a, b ->
+        // Row i costs (n - 1 - i) direct comparisons plus 5(n - 1) against the turned, mirrored and
+        // cropped hashes: about a - i with a = 6n. Chunks of equal cost (not equal rows) end where the
+        // running cost a·i - i²/2 reaches each share, so the last chunk is as small as the first.
+        val chunks = minOf(n, threads * 32)
+        val a = 6.0 * n - 5.5
+        val total = n * a - n.toDouble() * n / 2
+        val bounds = IntArray(chunks + 1) { c ->
+            (a - Math.sqrt(maxOf(0.0, a * a - 2 * total * c / chunks))).toInt().coerceIn(0, n)
+        }
+        bounds[chunks] = n
+        val next = java.util.concurrent.atomic.AtomicInteger()
+        val failure = java.util.concurrent.atomic.AtomicReference<Throwable>()
+        val work = Runnable {
+            val buf = IntArray(4096)
+            var k = 0
+            fun flush() {
+                synchronized(lock) {
+                    var p = 0
+                    while (p < k) {
+                        uf.union(buf[p], buf[p + 1])
+                        p += 2
+                    }
+                }
+                k = 0
+            }
+            try {
+                while (failure.get() == null) {
+                    val c = next.getAndIncrement()
+                    if (c >= chunks) break
+                    body(bounds[c], bounds[c + 1]) { a, b ->
                         if (k == buf.size) flush()
                         buf[k++] = a
                         buf[k++] = b
                     }
-                    flush()
                 }
+                flush()
+            } catch (t: Throwable) {
+                failure.compareAndSet(null, t)
             }
-            for (fut in pool.invokeAll(tasks)) fut.get()
-        } finally {
-            pool.shutdownNow()
         }
+        val helpers = (1 until threads).map { Thread(work, "match-$it").apply { isDaemon = true; start() } }
+        work.run()
+        helpers.forEach { it.join() }
+        failure.get()?.let { throw it }
     }
 
     companion object {

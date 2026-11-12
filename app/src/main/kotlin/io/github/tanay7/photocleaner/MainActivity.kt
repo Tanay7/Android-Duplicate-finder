@@ -18,6 +18,8 @@ import android.widget.Toast
 import android.window.OnBackInvokedCallback
 import android.window.OnBackInvokedDispatcher
 import io.github.tanay7.photocleaner.Prefs.askedNotifications
+import io.github.tanay7.photocleaner.scan.ScanRequest
+import io.github.tanay7.photocleaner.scan.ScanService
 import io.github.tanay7.photocleaner.scan.ScanState
 import io.github.tanay7.photocleaner.ui.FoldersScreen
 import io.github.tanay7.photocleaner.ui.MATCH
@@ -58,11 +60,25 @@ class MainActivity : Activity() {
         }
         push(FoldersScreen(this))
         val result = ScanState.result
+        val wasShowingResults = savedInstanceState?.getBoolean(STATE_RESULTS) == true
         when {
             ScanState.running -> push(ScanScreen(this))
-            result != null && savedInstanceState?.getBoolean(STATE_RESULTS) == true -> push(ResultsScreen(this, result))
+            result != null && wasShowingResults -> push(ResultsScreen(this, result))
+            // Android closed the app while its results were open: bring them back (quick: the
+            // fingerprints are remembered, so nothing is read again).
+            wasShowingResults -> restorePending = true
         }
         handleIntent(intent)
+    }
+
+    private var restorePending = false
+
+    private fun restore() {
+        val last = Prefs.lastScan(this) ?: return
+        val access = access()
+        if (access == Access.NONE || ScanState.running) return
+        ScanService.start(this, ScanRequest(last.first, last.second, access == Access.FULL, verbose = false, restoring = true))
+        push(ScanScreen(this))
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -88,6 +104,10 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        if (restorePending) {
+            restorePending = false
+            restore()
+        }
         top?.onResumed()
     }
 
@@ -197,7 +217,11 @@ class MainActivity : Activity() {
             !shouldShowRequestPermissionRationale(Manifest.permission.READ_MEDIA_IMAGES)
 
     fun openAppSettings() {
-        startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null)))
+        try {
+            startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null)))
+        } catch (_: Exception) {
+            toast("Open Settings, then Apps, then Photo Cleaner, to allow access")
+        }
     }
 
     /** Notifications show a scan's progress while the app is closed. Asked once, at the first scan. */

@@ -9,6 +9,7 @@ import android.view.Gravity
 import android.view.View
 import android.widget.FrameLayout
 import io.github.tanay7.photocleaner.MainActivity
+import io.github.tanay7.photocleaner.Prefs
 import io.github.tanay7.photocleaner.R
 import io.github.tanay7.photocleaner.core.Fmt
 import io.github.tanay7.photocleaner.core.Group
@@ -147,7 +148,7 @@ class ViewerScreen(
 
     private fun toggleCurrent() {
         val item = members[index].item
-        if (!r.selected.remove(item)) r.selected.add(item)
+        Prefs.setOverrides(ctx, r.tick(mapOf(item to (item !in r.selected))))
         updateToggle()
     }
 

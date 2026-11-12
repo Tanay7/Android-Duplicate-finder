@@ -1,6 +1,8 @@
 package io.github.tanay7.photocleaner.ui
 
 import android.app.AlertDialog
+import android.database.ContentObserver
+import android.provider.MediaStore
 import android.content.res.ColorStateList
 import android.os.Handler
 import android.os.Looper
@@ -130,16 +132,51 @@ class FoldersScreen(act: MainActivity) : Screen(act) {
 
     override val view: View = ui.vbox(bar.view, list.lp(MATCH, 0, 1f), bottom)
 
+    /**
+     * Reloads the list when the media index changes while it shows: photos taken or copied meanwhile,
+     * or files Android is still indexing, appear by themselves. Bursts of changes are read once.
+     */
+    private val reloadSoon = Runnable { load(force = true) }
+    private val observer = object : ContentObserver(main) {
+        override fun onChange(selfChange: Boolean) {
+            main.removeCallbacks(reloadSoon)
+            main.postDelayed(reloadSoon, 1000)
+        }
+    }
+    private var observing = false
+
     override fun onShown() {
         refresh()
         load(force = act.mediaChanged)
         act.mediaChanged = false
+        if (!observing && act.access() != MainActivity.Access.NONE) {
+            try {
+                // Every volume (phone, SD cards) notifies under the media authority.
+                ctx.contentResolver.registerContentObserver(MediaStore.AUTHORITY_URI, true, observer)
+                observing = true
+            } catch (_: Exception) {
+                // no live updates: the list still reloads every time the screen comes back
+            }
+        }
     }
+
+    override fun onHidden() = stopObserving()
 
     override fun onResumed() = load(force = false)
 
     override fun onDestroy() {
         destroyed = true
+        stopObserving()
+    }
+
+    private fun stopObserving() {
+        main.removeCallbacks(reloadSoon)
+        if (!observing) return
+        observing = false
+        try {
+            ctx.contentResolver.unregisterContentObserver(observer)
+        } catch (_: Exception) {
+        }
     }
 
     // -- data ------------------------------------------------------------------------------------
@@ -159,17 +196,19 @@ class FoldersScreen(act: MainActivity) : Screen(act) {
         refresh()
         val appCtx = ctx.applicationContext
         thread(name = "folders") {
-            val found = try {
-                MediaIndex.folders(MediaIndex.query(appCtx))
-            } catch (_: Exception) {
-                emptyList()
+            // Nothing thrown here may escape: an uncaught error on any thread ends the app.
+            val (found, tree) = try {
+                val f = MediaIndex.folders(MediaIndex.query(appCtx))
+                val labels = try {
+                    MediaIndex.volumeLabels(appCtx)
+                } catch (_: Exception) {
+                    emptyMap()
+                }
+                f to FolderTree.build(f) { labels[it] ?: if (it == "external_primary") "Phone" else "SD card" }
+            } catch (t: Throwable) {
+                android.util.Log.w("PhotoCleaner", "Couldn't list the folders", t)
+                emptyList<FolderInfo>() to emptyList()
             }
-            val labels = try {
-                MediaIndex.volumeLabels(appCtx)
-            } catch (_: Exception) {
-                emptyMap()
-            }
-            val tree = FolderTree.build(found) { labels[it] ?: if (it == "external_primary") "Phone" else "SD card" }
             main.post { if (!destroyed) loaded(found, tree) }
         }
     }
@@ -366,7 +405,10 @@ class FoldersScreen(act: MainActivity) : Screen(act) {
     }
 
     /** Called with the on-device test's extras: tick [folders] (comma-separated, "*" for all), maybe scan. */
+    private var testSince = 0L
+
     fun testRequest(folders: String?, autoscan: Boolean) {
+        testSince = SystemClock.elapsedRealtime()
         if (loading || loadedAt == 0L) {
             pendingTest = folders to autoscan
             load(force = true)
@@ -378,10 +420,17 @@ class FoldersScreen(act: MainActivity) : Screen(act) {
     private fun applyTest(wanted: String?, autoscan: Boolean) {
         if (wanted != null) {
             val list = wanted.split(',').map { it.trim().trim('/') }
-            selection.selected.clear()
-            for (f in folders) {
-                if (list.contains("*") || list.any { it.equals(f.path, ignoreCase = true) }) selection.selected.add(f.key)
+            val match = folders.filter { f -> list.contains("*") || list.any { it.equals(f.path, ignoreCase = true) } }
+            val missing = list.filter { w -> w != "*" && folders.none { it.path.equals(w, ignoreCase = true) } }
+            if ((match.isEmpty() || missing.isNotEmpty()) && SystemClock.elapsedRealtime() - testSince < 120_000) {
+                // Not indexed yet: wait for the media index to catch up (the observer reloads the list).
+                android.util.Log.i("PhotoCleaner", "TEST waiting for folders: $missing")
+                pendingTest = wanted to autoscan
+                main.postDelayed(reloadSoon, 3000)
+                return
             }
+            selection.selected.clear()
+            for (f in match) selection.selected.add(f.key)
             save()
             refresh()
         }

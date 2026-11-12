@@ -39,49 +39,87 @@ class ImageFeatures(
     val white: Float,
 )
 
+/**
+ * Buffers one worker thread reuses for every photo it analyses: the grey copy, the noise filter's
+ * output, a block of pixel rows and the resizing scratch. Analysing a photo then allocates (almost)
+ * nothing, so many threads can run without the garbage collector stopping them all. Not thread-safe:
+ * one per thread.
+ */
+class Scratch {
+    internal var gray = IntArray(0)
+    internal var med = IntArray(0)
+    internal var rows = IntArray(0)
+    internal var mid = DoubleArray(0)
+    internal val small = DoubleArray(32 * 32)
+    internal val line = DoubleArray(ImageAnalysis.REDUCED_SIZE + 2)
+    internal val blurred = DoubleArray(ImageAnalysis.REDUCED_SIZE + 2)
+    internal val hist = IntArray(256)
+
+    internal fun ensure(w: Int, h: Int) {
+        val n = w * h
+        if (gray.size < n) {
+            gray = IntArray(n)
+            med = IntArray(n)
+        }
+        if (rows.size < w * ImageAnalysis.ROW_BLOCK) rows = IntArray(w * ImageAnalysis.ROW_BLOCK)
+        if (mid.size < h * 32) mid = DoubleArray(h * 32)
+    }
+}
+
 object ImageAnalysis {
     /** Photos are analysed reduced to at most this long side. */
     const val REDUCED_SIZE = 1024
     const val HASH_BITS = 64
+    /** Rows of pixels fetched at a time. */
+    const val ROW_BLOCK = 32
     private const val FLAT_STD = 2.0
-    private const val VARIANT_COUNT = 4
 
     /**
-     * Analyses one reduced photo. [argb] holds unpremultiplied ARGB pixels row by row (what
-     * `Bitmap.getPixels` returns); transparent pixels are seen over white.
+     * Analyses one reduced photo. [fill] writes `count` rows of unpremultiplied ARGB pixels from row
+     * `y0` into the start of the array it gets (what `Bitmap.getPixels` does); transparent pixels are
+     * seen over white.
      */
-    fun analyze(argb: IntArray, w: Int, h: Int): ImageFeatures {
-        require(w > 0 && h > 0 && argb.size >= w * h) { "bad image size ${w}x$h" }
-        val n = w * h
-        val gray = IntArray(n)
+    fun analyze(w: Int, h: Int, s: Scratch = Scratch(), fill: (y0: Int, count: Int, out: IntArray) -> Unit): ImageFeatures {
+        require(w in 1..REDUCED_SIZE * 4 && h in 1..REDUCED_SIZE * 4) { "bad image size ${w}x$h" }
+        s.ensure(w, h)
+        val gray = s.gray
         var sumCb = 0.0
         var sumCr = 0.0
         var sumSat = 0.0
-        for (i in 0 until n) {
-            val p = argb[i]
-            val a = p ushr 24
-            var r = (p shr 16) and 0xFF
-            var g = (p shr 8) and 0xFF
-            var b = p and 0xFF
-            if (a < 255) {
-                r = (r * a + 255 * (255 - a) + 127) / 255
-                g = (g * a + 255 * (255 - a) + 127) / 255
-                b = (b * a + 255 * (255 - a) + 127) / 255
+        var y0 = 0
+        while (y0 < h) {
+            val count = min(ROW_BLOCK, h - y0)
+            fill(y0, count, s.rows)
+            val rows = s.rows
+            val base = y0 * w
+            for (i in 0 until count * w) {
+                val p = rows[i]
+                val a = p ushr 24
+                var r = (p shr 16) and 0xFF
+                var g = (p shr 8) and 0xFF
+                var b = p and 0xFF
+                if (a < 255) {
+                    r = (r * a + 255 * (255 - a) + 127) / 255
+                    g = (g * a + 255 * (255 - a) + 127) / 255
+                    b = (b * a + 255 * (255 - a) + 127) / 255
+                }
+                gray[base + i] = (r * 19595 + g * 38470 + b * 7471 + 0x8000) shr 16   // ITU-R 601 luma, like PIL's "L"
+                val cb = 128.0 - 0.168736 * r - 0.331264 * g + 0.5 * b
+                val cr = 128.0 + 0.5 * r - 0.418688 * g - 0.081312 * b
+                sumCb += cb
+                sumCr += cr
+                sumSat += abs(cb - 128.0) + abs(cr - 128.0)
             }
-            gray[i] = (r * 19595 + g * 38470 + b * 7471 + 0x8000) shr 16   // ITU-R 601 luma, like PIL's "L"
-            val cb = 128.0 - 0.168736 * r - 0.331264 * g + 0.5 * b
-            val cr = 128.0 + 0.5 * r - 0.418688 * g - 0.081312 * b
-            sumCb += cb
-            sumCr += cr
-            sumSat += abs(cb - 128.0) + abs(cr - 128.0)
+            y0 += count
         }
-        val ph = phash(gray, w, h)
-        val blur = Sharpness.measure(gray, w, h)
-        val exp = exposure(gray)
+        val n = w * h
+        val ph = phash(gray, w, h, s = s)
+        val blur = Sharpness.measure(gray, w, h, s)
+        val exp = exposure(gray, n, s.hist)
         return ImageFeatures(
             phash = ph.hash,
             variants = ph.variants,
-            cropHash = centreCropHash(gray, w, h),
+            cropHash = centreCropHash(gray, w, h, s),
             flat = isFlat(ph.hash, ph.std) || min(w, h) < 8,
             cb = (sumCb / n).toFloat(),
             cr = (sumCr / n).toFloat(),
@@ -94,11 +132,19 @@ object ImageAnalysis {
         )
     }
 
+    /** The same, for pixels already in one array (the tests, and small pictures). */
+    fun analyze(argb: IntArray, w: Int, h: Int, s: Scratch = Scratch()): ImageFeatures {
+        require(argb.size >= w * h) { "too few pixels" }
+        return analyze(w, h, s) { y0, count, out -> System.arraycopy(argb, y0 * w, out, 0, count * w) }
+    }
+
     class PHash(val hash: Long, val std: Double, val variants: LongArray)
 
     /** pHash of the region (x0, y0, cw, ch) of a grey image, plus its turned and mirrored variants. */
-    fun phash(gray: IntArray, w: Int, h: Int, x0: Int = 0, y0: Int = 0, cw: Int = w, ch: Int = h): PHash {
-        val x = resizeArea(gray, w, x0, y0, cw, ch, 32, 32)
+    fun phash(gray: IntArray, w: Int, h: Int, x0: Int = 0, y0: Int = 0, cw: Int = w, ch: Int = h, s: Scratch = Scratch()): PHash {
+        s.ensure(w, h)
+        val x = s.small
+        resizeArea(gray, w, x0, y0, cw, ch, 32, 32, s.mid, x)
         var mean = 0.0
         for (v in x) mean += v
         mean /= x.size
@@ -119,14 +165,14 @@ object ImageAnalysis {
         val low = DoubleArray(64)
         for (k in 0 until 8) {
             for (l in 0 until 8) {
-                var s = 0.0
-                for (col in 0 until 32) s += t[k * 32 + col] * DCT[l * 32 + col]
-                low[k * 8 + l] = s
+                var sum = 0.0
+                for (col in 0 until 32) sum += t[k * 32 + col] * DCT[l * 32 + col]
+                low[k * 8 + l] = sum
             }
         }
         // A flip or a quarter turn only swaps axes and changes signs in the DCT, so every variant
         // comes from this one transform.
-        val v = LongArray(VARIANT_COUNT)
+        val v = LongArray(4)
         val tmp = DoubleArray(64)
         for (i in 0 until 8) for (j in 0 until 8) tmp[i * 8 + j] = low[j * 8 + i] * sign(j)
         v[0] = bits64(tmp)
@@ -163,20 +209,19 @@ object ImageAnalysis {
     }
 
     /** pHash of the centre square (wide or tall photos) or of the central 80 % (squarish ones). */
-    fun centreCropHash(gray: IntArray, w: Int, h: Int): Long {
+    fun centreCropHash(gray: IntArray, w: Int, h: Int, s: Scratch = Scratch()): Long {
         return if (max(w, h) > 1.15 * min(w, h)) {
             val side = min(w, h)
-            phash(gray, w, h, (w - side) / 2, (h - side) / 2, side, side).hash
+            phash(gray, w, h, (w - side) / 2, (h - side) / 2, side, side, s).hash
         } else {
-            phash(gray, w, h, w / 10, h / 10, w - 2 * (w / 10), h - 2 * (h / 10)).hash
+            phash(gray, w, h, w / 10, h / 10, w - 2 * (w / 10), h - 2 * (h / 10), s).hash
         }
     }
 
-    /** Median brightness and the shares of pixels at or below 5 and at or above 250. */
-    fun exposure(gray: IntArray): FloatArray {
-        val hist = IntArray(256)
-        for (v in gray) hist[v]++
-        val n = gray.size
+    /** Median brightness and the shares of pixels at or below 5 and at or above 250, of the first n. */
+    fun exposure(gray: IntArray, n: Int = gray.size, hist: IntArray = IntArray(256)): FloatArray {
+        hist.fill(0)
+        for (i in 0 until n) hist[gray[i]]++
         fun kth(k: Int): Int {
             var c = 0
             for (v in 0..255) {
@@ -196,12 +241,14 @@ object ImageAnalysis {
     /**
      * Resizes the region (x0, y0, cw, ch) of a grey image of width [w] to tw x th by area averaging:
      * every output pixel is the mean of the source area it covers, so the result doesn't depend on
-     * which way the photo is turned.
+     * which way the photo is turned. [mid] holds at least ch * tw values; the result goes to [out].
      */
-    fun resizeArea(src: IntArray, w: Int, x0: Int, y0: Int, cw: Int, ch: Int, tw: Int, th: Int): DoubleArray {
+    fun resizeArea(
+        src: IntArray, w: Int, x0: Int, y0: Int, cw: Int, ch: Int, tw: Int, th: Int,
+        mid: DoubleArray = DoubleArray(ch * tw), out: DoubleArray = DoubleArray(th * tw),
+    ): DoubleArray {
         val wx = AreaWeights(cw, tw)
         val wy = AreaWeights(ch, th)
-        val mid = DoubleArray(ch * tw)
         for (y in 0 until ch) {
             val row = (y0 + y) * w + x0
             for (tx in 0 until tw) {
@@ -212,7 +259,6 @@ object ImageAnalysis {
                 mid[y * tw + tx] = acc
             }
         }
-        val out = DoubleArray(th * tw)
         for (ty in 0 until th) {
             val s = wy.start[ty]
             val ws = wy.weights[ty]
@@ -257,7 +303,7 @@ object ImageAnalysis {
     internal fun round2(v: Double): Float = ((v * 100).roundToInt() / 100.0).toFloat()
 }
 
-/** Blur and detail measures (DupeFinder's `blur_measures`). */
+/** Blur and detail measures (DupeFinder's `blur_measures`), on 0-255 grey values. */
 object Sharpness {
     class Result(val score: Float, val detail: Float)
 
@@ -268,17 +314,15 @@ object Sharpness {
      * background still scores well. The detail (Laplacian variance of the 4 sharpest tiles of the
      * unfiltered photo) ranks the frames of a burst, which share their noise.
      */
-    fun measure(gray: IntArray, w: Int, h: Int): Result {
-        val raw = FloatArray(gray.size) { gray[it].toFloat() }
-        val rawTiles = tiles(raw, w, h) ?: return Result(Float.NaN, 0f)
+    fun measure(gray: IntArray, w: Int, h: Int, s: Scratch = Scratch()): Result {
+        val rawTiles = tiles(gray, w, h) ?: return Result(Float.NaN, 0f)
         val lap = rawTiles.first
-        val sigma = noiseSigma(raw, w, h)
-        val filtered = when {
-            sigma > 6 -> medianFilter(gray, w, h, 2)
-            sigma > 2.5 -> medianFilter(gray, w, h, 1)
+        val sigma = noiseSigma(gray, w, h)
+        val a = when {
+            sigma > 6 -> medianFilter(gray, w, h, 2, s.medFor(w, h))
+            sigma > 2.5 -> medianFilter(gray, w, h, 1, s.medFor(w, h))
             else -> gray
         }
-        val a = if (filtered === gray) raw else FloatArray(filtered.size) { filtered[it].toFloat() }
         val ft = tiles(a, w, h)!!.second
         val hs = (h - 2) / 4
         val ws = (w - 2) / 4
@@ -288,34 +332,39 @@ object Sharpness {
         for (t in top) {
             val r0 = (t / 4) * hs
             val c0 = (t % 4) * ws
-            blur += reblur(a, w, r0, r0 + hs + 2, c0, c0 + ws + 2)
+            blur += reblur(a, w, r0, r0 + hs + 2, c0, c0 + ws + 2, s)
         }
         blur /= top.size
         return Result(ImageAnalysis.round1((1 - blur) * 100), ImageAnalysis.round2(lap))
     }
 
+    private fun Scratch.medFor(w: Int, h: Int): IntArray {
+        ensure(w, h)
+        return med
+    }
+
     /** Variance of the Laplacian in each tile of a 4x4 grid; first = mean of the 4 sharpest. */
-    fun tiles(a: FloatArray, w: Int, h: Int): Pair<Double, DoubleArray>? {
+    fun tiles(a: IntArray, w: Int, h: Int): Pair<Double, DoubleArray>? {
         if (h < 12 || w < 12) return null
         val hs = (h - 2) / 4
         val ws = (w - 2) / 4
         val out = DoubleArray(16)
         for (ti in 0 until 4) {
             for (tj in 0 until 4) {
-                var s = 0.0
-                var s2 = 0.0
+                var sum = 0L
+                var sum2 = 0L
                 for (y in ti * hs until (ti + 1) * hs) {
                     var c = (y + 1) * w + tj * ws + 1
                     for (x in 0 until ws) {
-                        val v = (a[c - 1] + a[c + 1] + a[c - w] + a[c + w] - 4 * a[c]).toDouble()
-                        s += v
-                        s2 += v * v
+                        val v = (a[c - 1] + a[c + 1] + a[c - w] + a[c + w] - 4 * a[c]).toLong()
+                        sum += v
+                        sum2 += v * v
                         c++
                     }
                 }
                 val cnt = (hs * ws).toDouble()
-                val mean = s / cnt
-                out[ti * 4 + tj] = max(0.0, s2 / cnt - mean * mean)
+                val mean = sum / cnt
+                out[ti * 4 + tj] = max(0.0, sum2 / cnt - mean * mean)
             }
         }
         val sorted = out.sortedArray()
@@ -323,9 +372,9 @@ object Sharpness {
     }
 
     /** Immerkær's fast estimate of the noise standard deviation. */
-    fun noiseSigma(a: FloatArray, w: Int, h: Int): Double {
+    fun noiseSigma(a: IntArray, w: Int, h: Int): Double {
         if (h < 3 || w < 3) return 0.0
-        var sum = 0.0
+        var sum = 0L
         for (y in 1 until h - 1) {
             var c = y * w + 1
             for (x in 1 until w - 1) {
@@ -343,23 +392,24 @@ object Sharpness {
      * Re-blurring a sharp picture removes much of its variation; re-blurring a blurry one changes
      * little. Measured both ways, so motion blur counts too.
      */
-    fun reblur(a: FloatArray, w: Int, r0: Int, r1: Int, c0: Int, c1: Int): Double {
+    fun reblur(a: IntArray, w: Int, r0: Int, r1: Int, c0: Int, c1: Int, s: Scratch = Scratch()): Double {
         val th = r1 - r0
         val tw = c1 - c0
         var worst = 0.0
         var measured = false
+        val v = s.line
+        val b = s.blurred
         for (axis in 0..1) {
             val len = if (axis == 0) th else tw
             val lines = if (axis == 0) tw else th
             if (len < 12) continue
-            val v = DoubleArray(len)
             var sf = 0.0
             var sv = 0.0
-            for (line in 0 until lines) {
+            for (ln in 0 until lines) {
                 for (i in 0 until len) {
-                    v[i] = if (axis == 0) a[(r0 + i) * w + c0 + line].toDouble() else a[(r0 + line) * w + c0 + i].toDouble()
+                    v[i] = if (axis == 0) a[(r0 + i) * w + c0 + ln].toDouble() else a[(r0 + ln) * w + c0 + i].toDouble()
                 }
-                val b = boxBlur9(v)
+                boxBlur9(v, len, b)
                 for (i in 0 until len - 1) {
                     val df = abs(v[i + 1] - v[i])
                     val db = abs(b[i + 1] - b[i])
@@ -374,10 +424,8 @@ object Sharpness {
         return if (measured) worst else 1.0
     }
 
-    /** Mean of 9 neighbours along a line, repeating the end values past the ends. */
-    private fun boxBlur9(v: DoubleArray): DoubleArray {
-        val n = v.size
-        val out = DoubleArray(n)
+    /** Mean of 9 neighbours along the first n values of a line, repeating the end values past the ends. */
+    private fun boxBlur9(v: DoubleArray, n: Int, out: DoubleArray) {
         var acc = 0.0
         for (k in -4..4) acc += v[k.coerceIn(0, n - 1)]
         out[0] = acc / 9
@@ -385,12 +433,13 @@ object Sharpness {
             acc += v[(i + 4).coerceAtMost(n - 1)] - v[(i - 5).coerceAtLeast(0)]
             out[i] = acc / 9
         }
-        return out
     }
 
-    /** Median filter of radius r (window 2r+1) on 0-255 values, edges repeated (a sliding histogram). */
-    fun medianFilter(src: IntArray, w: Int, h: Int, r: Int): IntArray {
-        val out = IntArray(w * h)
+    /**
+     * Median filter of radius r (window 2r+1) on 0-255 values, edges repeated (a sliding histogram),
+     * into [out].
+     */
+    fun medianFilter(src: IntArray, w: Int, h: Int, r: Int, out: IntArray = IntArray(w * h)): IntArray {
         val k = 2 * r + 1
         val rank = (k * k) / 2
         val hist = IntArray(256)

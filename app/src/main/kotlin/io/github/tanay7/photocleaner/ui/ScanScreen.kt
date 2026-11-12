@@ -9,6 +9,7 @@ import android.widget.ProgressBar
 import io.github.tanay7.photocleaner.MainActivity
 import io.github.tanay7.photocleaner.scan.ScanService
 import io.github.tanay7.photocleaner.scan.ScanState
+import io.github.tanay7.photocleaner.scan.Stage
 
 /** Shows a running scan; becomes the results when it's done. */
 class ScanScreen(act: MainActivity) : Screen(act) {
@@ -17,6 +18,7 @@ class ScanScreen(act: MainActivity) : Screen(act) {
 
     private val title = ui.text("Looking for duplicates", 24f, c.onSurface, 500).apply { gravity = Gravity.CENTER }
     private val stage = ui.text("", 15f, c.onSurfaceVariant).apply { gravity = Gravity.CENTER }
+    private val coresLine = ui.text("", 13f, c.onSurfaceVariant).apply { gravity = Gravity.CENTER }
     private val progress = ProgressBar(ctx, null, android.R.attr.progressBarStyleHorizontal).apply {
         progressTintList = ColorStateList.valueOf(c.primary)
         progressBackgroundTintList = ColorStateList.valueOf(c.surfaceHigh)
@@ -36,6 +38,7 @@ class ScanScreen(act: MainActivity) : Screen(act) {
                 title,
                 stage.lp(t = ui.dp(12)),
                 progress.lp(MATCH, ui.dp(12), t = ui.dp(24)),
+                coresLine.lp(t = ui.dp(10)),
                 hint.lp(t = ui.dp(24)),
                 button.lp(WRAP, WRAP, t = ui.dp(28), gravity = Gravity.CENTER_HORIZONTAL),
             ).apply { setPadding(ui.dp(32), 0, ui.dp(32), 0) }
@@ -46,6 +49,7 @@ class ScanScreen(act: MainActivity) : Screen(act) {
     override val wantsBack: Boolean get() = true
 
     override fun onShown() {
+        if (ScanState.request?.restoring == true) title.text = "Bringing back your results"
         unlisten = ScanState.listen { update(it) }
         update(ScanState.status)
     }
@@ -65,6 +69,11 @@ class ScanScreen(act: MainActivity) : Screen(act) {
         when (s) {
             is ScanState.Running -> {
                 stage.text = ScanService.stageText(s.stage, s.done, s.total)
+                coresLine.text = if (s.stage == Stage.READING || s.stage == Stage.VIDEOS || s.stage == Stage.COMPARING) {
+                    ScanService.coresText(if (s.stage == Stage.COMPARING) Runtime.getRuntime().availableProcessors() else s.threads)
+                } else {
+                    ""
+                }
                 progress.isIndeterminate = s.total == 0
                 if (s.total > 0) {
                     progress.max = s.total

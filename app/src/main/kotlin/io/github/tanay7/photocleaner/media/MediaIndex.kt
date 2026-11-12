@@ -82,8 +82,9 @@ object MediaIndex {
             fun str(name: String) = c.getString(col.getValue(name)) ?: ""
             fun long(name: String) = if (c.isNull(col.getValue(name))) 0L else c.getLong(col.getValue(name))
             while (c.moveToNext()) {
+                // A file Android hasn't finished indexing can still say 0 bytes: it is listed all the
+                // same (the scan reads the real bytes), so a folder never looks empty while it isn't.
                 val size = long(MediaStore.MediaColumns.SIZE)
-                if (size <= 0) continue
                 out.add(
                     MediaItem(
                         kind = kind,
@@ -105,6 +106,26 @@ object MediaIndex {
                 )
             }
         }
+    }
+
+    /**
+     * The keys of those [items] still on the phone (not deleted, not in the trash). Checked before
+     * moving files and after Android answers, so the app never acts on, or reports, a file that has
+     * gone meanwhile.
+     */
+    fun existing(ctx: Context, items: Collection<MediaItem>): Set<String> {
+        val out = HashSet<String>()
+        for ((where, list) in items.groupBy { it.kind to it.volume }) {
+            val uri = MediaItem.collection(where.first, where.second)
+            for (chunk in list.chunked(400)) {
+                val byId = chunk.associateBy { it.id }
+                val sel = "${MediaStore.MediaColumns._ID} IN (${chunk.joinToString(",") { it.id.toString() }})"
+                ctx.contentResolver.query(uri, arrayOf(MediaStore.MediaColumns._ID), sel, null, null)?.use { c ->
+                    while (c.moveToNext()) byId[c.getLong(0)]?.let { out.add(it.key) }
+                }
+            }
+        }
+        return out
     }
 
     /** One entry per folder that directly holds photos or videos, with its counts and size. */

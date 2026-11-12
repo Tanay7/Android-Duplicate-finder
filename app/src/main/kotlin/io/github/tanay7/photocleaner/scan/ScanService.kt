@@ -12,6 +12,7 @@ import android.os.IBinder
 import android.os.SystemClock
 import android.util.Log
 import io.github.tanay7.photocleaner.MainActivity
+import io.github.tanay7.photocleaner.Prefs
 import io.github.tanay7.photocleaner.R
 import io.github.tanay7.photocleaner.core.Fmt
 import java.util.concurrent.CancellationException
@@ -42,7 +43,7 @@ class ScanService : Service() {
             ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROCESSING)
         worker = thread(name = "scan") {
             val status = try {
-                ScanState.Done(Scanner(this, req, ScanState.cancel) { stage, done, total -> onProgress(stage, done, total) }.run())
+                ScanState.Done(Scanner(this, req, ScanState.cancel) { stage, done, total, threads -> onProgress(stage, done, total, threads) }.run())
             } catch (_: CancellationException) {
                 ScanState.Idle
             } catch (e: Throwable) {
@@ -64,8 +65,8 @@ class ScanService : Service() {
         stopSelf()
     }
 
-    private fun onProgress(stage: Stage, done: Int, total: Int) {
-        ScanState.post(ScanState.Running(stage, done, total))
+    private fun onProgress(stage: Stage, done: Int, total: Int, threads: Int) {
+        ScanState.post(ScanState.Running(stage, done, total, threads))
         val now = SystemClock.elapsedRealtime()
         if (now - lastNotified < 1000 && done != total) return
         lastNotified = now
@@ -123,6 +124,7 @@ class ScanService : Service() {
 
         fun start(ctx: Context, req: ScanRequest) {
             ScanState.request = req
+            Prefs.saveLastScan(ctx, req.folders, req.options)
             ScanState.cancel.set(false)
             ScanState.post(ScanState.Running(Stage.LISTING, 0, 0))
             ctx.getSystemService(NotificationManager::class.java).cancel(NOTIFY_DONE)
@@ -141,6 +143,15 @@ class ScanService : Service() {
             Stage.READING -> "Reading photos: ${Fmt.count(done)} of ${Fmt.count(total)}"
             Stage.VIDEOS -> "Checking videos: ${Fmt.count(done)} of ${Fmt.count(total)}"
             Stage.COMPARING -> "Comparing…"
+        }
+
+        /** "Using all 8 cores", or how many and why fewer. */
+        fun coresText(threads: Int): String {
+            val cores = Runtime.getRuntime().availableProcessors()
+            return when {
+                threads >= cores -> "Using all ${Fmt.count(cores)} cores"
+                else -> "Using ${Fmt.count(threads)} of ${Fmt.count(cores)} cores (memory or heat)"
+            }
         }
     }
 }

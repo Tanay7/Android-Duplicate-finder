@@ -121,9 +121,23 @@ class ImageAnalysisTest {
         val flat = Scenes.uniform(120, 300, 300)
         val noisy = Scenes.noise(flat, 10.0, 1)
         val gray = IntArray(noisy.px.size) { noisy.px[it] and 0xFF }
-        val a = FloatArray(gray.size) { gray[it].toFloat() }
-        val sigma = Sharpness.noiseSigma(a, 300, 300)
+        val sigma = Sharpness.noiseSigma(gray, 300, 300)
         assertTrue("sigma $sigma", sigma in 8.0..12.0)
+    }
+
+    @Test fun reusedBuffersGiveTheSameAnswers() {
+        val shared = Scratch()
+        for ((seed, size) in listOf(21 to (900 to 700), 22 to (300 to 200), 23 to (1024 to 512), 24 to (64 to 900))) {
+            val p = Scenes.noise(Scenes.scene(seed, size.first, size.second), 7.0, seed)
+            val fresh = p.features()
+            val reused = ImageAnalysis.analyze(p.px, p.w, p.h, shared)
+            assertEquals(fresh.phash, reused.phash)
+            assertEquals(fresh.cropHash, reused.cropHash)
+            assertEquals(fresh.sharpness, reused.sharpness, 0f)
+            assertEquals(fresh.detail, reused.detail, 0f)
+            assertEquals(fresh.median, reused.median, 0f)
+            assertTrue(fresh.variants.contentEquals(reused.variants))
+        }
     }
 
     @Test fun bitsAreOrderedFromTheFirstValue() {

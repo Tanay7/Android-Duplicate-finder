@@ -6,7 +6,8 @@
 #      folders may be searched
 #   3. through the real buttons and the system's own dialog: move the ticked files to the trash,
 #      check they've left the media index and the kept copies haven't, then Undo and check they're back
-#   4. GUI exploration with monkey (several seeds), including rotation
+#   4. Android closing the app while its results are open: they must come back
+#   5. GUI exploration with monkey (15,000 events), including rotation
 # Fails if a check fails, or the app crashes or stops responding (ANR) at any point.
 set -u
 APK=$1
@@ -46,13 +47,18 @@ indexed() {  # every image the media index lists, as folder/name
   adb shell content query --uri content://media/external/images/media --projection relative_path:_display_name 2>/dev/null |
     sed -nE 's/.*relative_path=([^,]*), _display_name=(.*)$/\1\2/p' | tr -d '\r'
 }
+sized() {  # images Android has finished indexing (their size is known)
+  adb shell content query --uri content://media/external/images/media --projection _size 2>/dev/null | grep -cE '_size=[1-9]'
+}
 want=$(cd "$DATA" && find . -type f | wc -l)
-for i in $(seq 1 60); do
+wantSized=$(cd "$DATA" && find . -type f -size +0 | wc -l)     # an empty file never gets a size
+for i in $(seq 1 90); do
   have=$(indexed | wc -l)
-  [ "$have" -ge "$want" ] && break
+  done_=$(sized)
+  [ "$have" -ge "$want" ] && [ "$done_" -ge "$wantSized" ] && break
   sleep 2
 done
-echo "media index: $have images (want $want), videos=$VIDEOS"
+echo "media index: $have images, $done_ with their size (want $want, $wantSized), videos=$VIDEOS"
 [ "$have" -ge "$want" ] || { fail "test photos missing from the media index"; indexed; }
 if [ $VIDEOS = 1 ]; then
   for i in $(seq 1 30); do
@@ -121,13 +127,16 @@ fi
 
 echo "== everything is ticked"
 r=$(scan '*'); echo "$r"
-expect "$r" photos 14
+expect "$r" photos 17
 expect "$r" videos $((2 * VIDEOS))
 expect "$r" groups $((3 + VIDEOS))
 expect "$r" lookalike 1
 expect "$r" bursts 1
 expect "$r" poor 1
 expect "$r" videogroups $VIDEOS
+expect "$r" undecodable 2          # the truncated photo and the text file: reported, not fatal
+expect "$r" unreadable 0
+[ "$(field "$r" threads)" -ge 1 ] && ok "read on $(field "$r" threads) threads, $(field "$r" cores) cores" || fail "no thread count"
 TICKED=$((8 + VIDEOS))
 expect "$r" suggested $TICKED
 grep ' GROUP lookalike ' logcat.txt | tail -1 | grep -q 'KEEP:DCIM/Camera/IMG_0001.jpg' &&
@@ -168,14 +177,34 @@ else
   fail "no 'Move $TICKED to trash' button"
 fi
 
+echo "== Android closes the app while its results are open"
+python3 "$HERE/ui.py" '^Results$' >/dev/null || { tap 'View results' && sleep 2; }
+n0=$(grep -c ' RESULT ' logcat.txt)
+adb shell input keyevent KEYCODE_HOME; sleep 3
+adb shell am kill $PKG; sleep 3
+if adb shell pidof $PKG >/dev/null 2>&1; then
+  echo "skipped: Android kept the process alive, so there was nothing to bring back"
+  adb shell am start -n $PKG/.MainActivity >/dev/null; sleep 2
+else
+  adb shell am start -n $PKG/.MainActivity >/dev/null
+  for i in $(seq 1 60); do [ "$(grep -c ' RESULT ' logcat.txt)" -gt "$n0" ] && break; sleep 1; done
+  sleep 3; shot 12-results-restored
+  if [ "$(grep -c ' RESULT ' logcat.txt)" -gt "$n0" ] && python3 "$HERE/ui.py" '^Results$' >/dev/null; then
+    ok "the results came back after Android closed the app"
+  else
+    fail "the results didn't come back after Android closed the app"
+  fi
+fi
+adb shell input keyevent KEYCODE_BACK; sleep 1
+
 adb shell settings put system accelerometer_rotation 0
 adb shell settings put system user_rotation 1; sleep 3; shot 11-landscape
 adb shell settings put system user_rotation 0; sleep 2
 
 # -- random GUI exploration -------------------------------------------------------------------
 start() { adb shell am start -W -n $PKG/.MainActivity >/dev/null; sleep "${1:-3}"; }
-for seed in 11 22 33; do
-  adb shell monkey -p $PKG -s $seed --throttle 60 --pct-syskeys 2 --pct-rotation 3 -v 2000 > monkey-$seed.txt 2>&1
+for seed in 11 22 33 44 55; do
+  adb shell monkey -p $PKG -s $seed --throttle 40 --pct-syskeys 2 --pct-rotation 3 -v 3000 > monkey-$seed.txt 2>&1
   grep -h "Events injected" monkey-$seed.txt || true
   start 2
 done

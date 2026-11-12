@@ -20,7 +20,14 @@ data class ScanOptions(
     val maxBits: Int = 8,
 )
 
-class ScanRequest(val folders: Set<String>, val options: ScanOptions, val fullAccess: Boolean, val verbose: Boolean)
+class ScanRequest(
+    val folders: Set<String>,
+    val options: ScanOptions,
+    val fullAccess: Boolean,
+    val verbose: Boolean,
+    /** Bringing back the results of the last scan after Android closed the app. */
+    val restoring: Boolean = false,
+)
 
 enum class Stage { LISTING, READING, VIDEOS, COMPARING }
 
@@ -36,12 +43,38 @@ class ScanResult(
     val folders: Int,
     val unreadable: Int,
     val seconds: Double,
+    /** Threads that read the files at once: one per core, as far as memory allowed. */
+    val threads: Int,
+    /** Choices made by hand before (file key to ticked), which win over the suggestions. */
+    overrides: Map<String, Boolean> = emptyMap(),
 ) {
     val selected = HashSet<Int>()
     val trashed = HashSet<Int>()
+    private val suggested = HashSet<Int>()
 
     init {
-        for (g in groups) for (m in g.members) if (m.suggestTrash) selected.add(m.item)
+        for (g in groups) for (m in g.members) {
+            if (m.suggestTrash) suggested.add(m.item)
+            when (overrides[items[m.item].key]) {
+                true -> selected.add(m.item)
+                false -> Unit
+                null -> if (m.suggestTrash) selected.add(m.item)
+            }
+        }
+    }
+
+    /**
+     * Ticks or unticks files by hand and remembers it (null: back to the suggestion); returns the
+     * choices to save, by file key: null where the choice now matches the suggestion.
+     */
+    fun tick(changes: Map<Int, Boolean?>): Map<String, Boolean?> {
+        val save = HashMap<String, Boolean?>()
+        for ((item, on) in changes) {
+            val want = on ?: (item in suggested)
+            if (want) selected.add(item) else selected.remove(item)
+            save[items[item].key] = if (on == null || want == (item in suggested)) null else want
+        }
+        return save
     }
 
     /** The members still on the phone. */
@@ -70,7 +103,7 @@ enum class Category(val label: String) {
 object ScanState {
     sealed interface Status
     data object Idle : Status
-    class Running(val stage: Stage, val done: Int, val total: Int) : Status
+    class Running(val stage: Stage, val done: Int, val total: Int, val threads: Int = 1) : Status
     class Done(val result: ScanResult) : Status
     class Failed(val message: String) : Status
 

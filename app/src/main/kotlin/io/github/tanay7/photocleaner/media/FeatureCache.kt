@@ -4,6 +4,7 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import android.util.Log
 import io.github.tanay7.photocleaner.core.ImageFeatures
 
 /** What was learnt about one file: its fingerprint, and for photos what its pixels look like. */
@@ -31,8 +32,11 @@ class FeatureRow(
  * Remembers fingerprints between scans (a SQLite database in the app's private storage), so a second
  * scan only reads new and changed files. Rows are found by MediaStore id and checked against the
  * file's size and modification time.
+ *
+ * A cache must never stop a scan: a damaged database is deleted and started again, and when the
+ * storage is full the rows just aren't kept this time.
  */
-class FeatureCache(ctx: Context) : SQLiteOpenHelper(ctx, "features.db", null, ALGO) {
+class FeatureCache(private val ctx: Context) : SQLiteOpenHelper(ctx, NAME, null, ALGO) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
             """CREATE TABLE features (
@@ -51,7 +55,15 @@ class FeatureCache(ctx: Context) : SQLiteOpenHelper(ctx, "features.db", null, AL
 
     override fun onDowngrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = onUpgrade(db, oldVersion, newVersion)
 
-    fun load(): HashMap<String, FeatureRow> {
+    fun load(): HashMap<String, FeatureRow> = try {
+        read()
+    } catch (e: Exception) {
+        Log.w(TAG, "Fingerprint cache unreadable, starting a new one", e)
+        reset()
+        HashMap()
+    }
+
+    private fun read(): HashMap<String, FeatureRow> {
         val out = HashMap<String, FeatureRow>()
         readableDatabase.rawQuery("SELECT * FROM features", null).use { c ->
             val idx = (0 until c.columnCount).associateBy { c.getColumnName(it) }
@@ -97,6 +109,14 @@ class FeatureCache(ctx: Context) : SQLiteOpenHelper(ctx, "features.db", null, AL
 
     fun save(rows: Collection<FeatureRow>) {
         if (rows.isEmpty()) return
+        try {
+            write(rows)
+        } catch (e: Exception) {
+            Log.w(TAG, "Fingerprints not kept (${rows.size})", e)
+        }
+    }
+
+    private fun write(rows: Collection<FeatureRow>) {
         val db = writableDatabase
         db.beginTransaction()
         try {
@@ -142,22 +162,34 @@ class FeatureCache(ctx: Context) : SQLiteOpenHelper(ctx, "features.db", null, AL
     fun prune(liveKeys: Set<String>, known: Collection<String>) {
         val gone = known.filter { it !in liveKeys }
         if (gone.isEmpty()) return
-        val db = writableDatabase
-        db.beginTransaction()
         try {
-            for (k in gone) db.delete("features", "key = ?", arrayOf(k))
-            db.setTransactionSuccessful()
-        } finally {
-            db.endTransaction()
+            val db = writableDatabase
+            db.beginTransaction()
+            try {
+                for (k in gone) db.delete("features", "key = ?", arrayOf(k))
+                db.setTransactionSuccessful()
+            } finally {
+                db.endTransaction()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Couldn't forget deleted files", e)
         }
     }
 
-    fun clear() {
-        writableDatabase.execSQL("DELETE FROM features")
+    /** Deletes the database file; the next use creates a new, empty one. */
+    private fun reset() {
+        try {
+            close()
+            ctx.deleteDatabase(NAME)
+        } catch (e: Exception) {
+            Log.w(TAG, "Couldn't delete the fingerprint cache", e)
+        }
     }
 
     companion object {
         /** Raising this recomputes every cached fingerprint (the database version). */
         const val ALGO = 1
+        private const val NAME = "features.db"
+        private const val TAG = "PhotoCleaner"
     }
 }

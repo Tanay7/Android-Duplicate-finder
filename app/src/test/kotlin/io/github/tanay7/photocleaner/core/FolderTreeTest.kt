@@ -104,3 +104,24 @@ class NamesTest {
         assertEquals("2 photos", Fmt.plural(2, "photo", "photos", us))
     }
 }
+
+class ParallelismTest {
+    @Test fun oneThreadPerCoreAsFarAsMemoryAllows() {
+        val gb = 1L shl 30
+        assertEquals(8, Parallelism.threads(8, 4 * gb, 400L shl 20))          // plenty: every core
+        assertEquals(12, Parallelism.threads(12, 8 * gb, 1 * gb))
+        assertEquals(3, Parallelism.threads(8, 300L shl 20, 400L shl 20))     // little free memory: fewer
+        assertEquals(2, Parallelism.threads(8, 4 * gb, 40L shl 20))           // little heap left: fewer
+        assertEquals(1, Parallelism.threads(8, 0, 0))                          // never none
+        assertEquals(1, Parallelism.threads(8, -5, 10))
+    }
+
+    @Test fun stuckFilesAndHeat() {
+        assertEquals(60_000L, Parallelism.stuckAfterMs(0))
+        assertEquals(460_000L, Parallelism.stuckAfterMs(4_000_000_000L))       // a 4 GB video gets ~8 minutes
+        assertEquals(8, Parallelism.allowed(8, 2))
+        assertEquals(4, Parallelism.allowed(8, 3))
+        assertEquals(1, Parallelism.allowed(8, 4))
+        assertEquals(1, Parallelism.allowed(1, 3))
+    }
+}
