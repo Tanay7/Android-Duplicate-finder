@@ -2,7 +2,8 @@
 
 ## [⬇ Download the latest APK](release/PhotoCleaner.apk?raw=true)
 
-CI rebuilds `release/PhotoCleaner.apk` on every code push, so the link always points to the newest build.
+CI rebuilds the APK on every code push and puts it in `release/` once the on-device tests have passed
+on Android 16 and 17, so the link always points to the newest tested build.
 
 A duplicate photo and video cleaner for **Android 16 and 17** (minSdk 36, targetSdk 37).
 **You choose the folders it searches.** In them it finds:
@@ -215,8 +216,8 @@ Reader do it:
 ## Build
 
 JDK 17+ and Android SDK 37: `./gradlew assembleRelease`. The **Build APK** workflow runs on every
-code push. It runs the unit tests and lint, builds the minified APK, commits it to `release/`, then
-runs the on-device test on Android 16 and 17 emulators.
+code push. It runs the unit tests and lint, builds the minified APK, runs the on-device test on
+Android 16 and 17 emulators, and commits the APK to `release/` when both have passed.
 
 All builds are signed with `app/photo-cleaner.keystore`, so updates install over each other and keep
 your folder choice and fingerprint cache. The repository is public, so anyone can sign an APK with

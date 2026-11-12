@@ -36,12 +36,15 @@ jobs:
           # the test build goes along for the device tests only (it is never published)
           mkdir -p out && cp app/build/outputs/apk/release/app-release.apk app/build/outputs/apk/debug/app-debug.apk out/
       - uses: actions/upload-artifact@v4
+        id: upload
         continue-on-error: true # a full artifact store must not stop the build; the device tests fall back to release/
         with:
           name: PhotoCleaner-apk
           path: out/*.apk
           retention-days: 3
-      - name: Publish APK to release/ in the repo
+      # The APK normally reaches release/ only once the device tests have passed (the publish job).
+      - name: Without the artifact store, publish the APK at once so the device tests can fetch it
+        if: steps.upload.outcome != 'success'
         run: bash scripts/publish.sh "Update release/PhotoCleaner.apk [skip ci]" app/build/outputs/apk/release/app-release.apk release/PhotoCleaner.apk
   device-test:
     needs: build
@@ -115,3 +118,17 @@ jobs:
             logcat.txt
             monkey-*.txt
             screen-*.png
+  publish:
+    needs: [build, device-test] # only an APK that passed on both emulators is offered for download
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: PhotoCleaner-apk
+          path: apk
+      - name: Publish the tested APK to release/ in the repo
+        run: |
+          [ -f apk/app-release.apk ] || { echo "No artifact: the build job has published the APK already"; exit 0; }
+          bash scripts/publish.sh "Update release/PhotoCleaner.apk [skip ci]" apk/app-release.apk release/PhotoCleaner.apk
