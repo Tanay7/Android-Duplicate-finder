@@ -67,7 +67,7 @@ object Words {
                     else -> "$pct alike"
                 }
             }
-            Relation.BURST -> m.relSharpness?.let { "${it.roundToInt()}% as sharp" } ?: "Burst shot"
+            Relation.BURST -> m.relSharpness?.let { if (it < 1f) "Far less sharp" else "${it.roundToInt()}% as sharp" } ?: "Burst shot"
             Relation.VIA -> "Linked through another"
             Relation.POOR -> ""
         }

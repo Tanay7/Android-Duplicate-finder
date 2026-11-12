@@ -37,7 +37,7 @@ for p in READ_MEDIA_IMAGES READ_MEDIA_VIDEO ACCESS_MEDIA_LOCATION POST_NOTIFICAT
 files() { (cd "$DATA" && find . -type f | sed 's|^\./||' | grep -v '^Pictures/CrashTest/'); }
 crashfiles() { (cd "$DATA" && find . -type f | sed 's|^\./||' | grep '^Pictures/CrashTest/'); }
 files | while IFS= read -r f; do
-  adb push "$DATA/$f" "/sdcard/$f" >/dev/null || echo "push failed: $f"
+  adb push "$DATA/$f" "/sdcard/$f" </dev/null >/dev/null || echo "push failed: $f"
 done
 adb shell mkdir -p /sdcard/Movies /sdcard/Download
 VIDEOS=0
@@ -46,8 +46,9 @@ if adb shell screenrecord --time-limit 3 /sdcard/Movies/clip.mp4 >/dev/null 2>&1
   VIDEOS=1
 fi
 # Files written through /sdcard reach the media index on their own; ask for a scan too, to be sure.
+# (adb shell would swallow the rest of the list if it could read it: its input is closed.)
 (files; [ $VIDEOS = 1 ] && printf 'Movies/clip.mp4\nDownload/clip (1).mp4\n') | while IFS= read -r f; do
-  adb shell "am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d 'file:///sdcard/$f'" >/dev/null 2>&1
+  adb shell "am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d 'file:///sdcard/$f'" </dev/null >/dev/null 2>&1
 done
 indexed() {  # every image the media index lists, as folder/name
   adb shell content query --uri content://media/external/images/media --projection relative_path:_display_name 2>/dev/null |
@@ -58,10 +59,22 @@ sized() {  # images Android has finished indexing (their size is known)
 }
 want=$(files | wc -l)
 wantSized=$(files | while IFS= read -r f; do [ -s "$DATA/$f" ] && echo "$f"; done | wc -l)     # an empty file never gets a size
+# Right after boot the media index can miss a file that was written while it was still starting:
+# such a file is written again, and the index asked to look at the storage.
+again() {  # again LIST: push the files of LIST (one per line) that the index doesn't have
+  comm -23 <(echo "$1" | sort) <(indexed | sort) | while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    echo "not in the media index, written again: $f"
+    adb shell "rm -f '/sdcard/$f'" </dev/null >/dev/null 2>&1
+    adb push "$DATA/$f" "/sdcard/$f" </dev/null >/dev/null || echo "push failed: $f"
+  done
+  adb shell content call --uri content://media --method scan_volume --arg external_primary </dev/null >/dev/null 2>&1
+}
 for i in $(seq 1 90); do
   have=$(indexed | wc -l)
   done_=$(sized)
   [ "$have" -ge "$want" ] && [ "$done_" -ge "$wantSized" ] && break
+  [ $((i % 8)) = 0 ] && again "$(files)"
   sleep 2
 done
 echo "media index: $have images, $done_ with their size (want $want, $wantSized), videos=$VIDEOS"
@@ -237,11 +250,12 @@ if [ -n "$DEBUG_APK" ] && [ -f "$DEBUG_APK" ]; then
   # three new photos, one of which the test build dies on
   n0=$(indexed | wc -l)
   crashfiles | while IFS= read -r f; do
-    adb push "$DATA/$f" "/sdcard/$f" >/dev/null || echo "push failed: $f"
-    adb shell "am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d 'file:///sdcard/$f'" >/dev/null 2>&1
+    adb push "$DATA/$f" "/sdcard/$f" </dev/null >/dev/null || echo "push failed: $f"
+    adb shell "am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d 'file:///sdcard/$f'" </dev/null >/dev/null 2>&1
   done
   for i in $(seq 1 60); do
     [ "$(indexed | grep -c '^Pictures/CrashTest/')" -ge "$(crashfiles | wc -l)" ] && [ "$(sized)" -ge "$((n0 + $(crashfiles | wc -l)))" ] && break
+    [ $((i % 8)) = 0 ] && again "$(crashfiles)"
     sleep 2
   done
   [ "$(indexed | grep -c '^Pictures/CrashTest/')" -ge 3 ] || fail "the crash-test photos are missing from the media index"
