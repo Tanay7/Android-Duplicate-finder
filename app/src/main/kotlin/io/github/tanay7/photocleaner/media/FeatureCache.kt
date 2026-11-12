@@ -55,13 +55,17 @@ class FeatureCache(private val ctx: Context) : SQLiteOpenHelper(ctx, NAME, null,
                 v3 INTEGER, crop INTEGER, f0 INTEGER, f1 INTEGER, f2 INTEGER, f3 INTEGER, c0 INTEGER,
                 c1 INTEGER, c2 INTEGER, c3 INTEGER, flat INTEGER, cb REAL, cr REAL, sat REAL, mean REAL,
                 contrast REAL, sharp REAL, detail REAL, med REAL, black REAL, white REAL, error TEXT,
-                orig INTEGER, grid BLOB)""",
+                orig INTEGER)""",
         )
+        // The grids are most of what is known about a photo, and are needed for few photos: in a
+        // table of their own, loading the fingerprints reads none of them.
+        db.execSQL("CREATE TABLE grids (key TEXT PRIMARY KEY, grid BLOB)")
     }
 
     /** A new algorithm version recomputes everything: the old fingerprints aren't comparable. */
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         db.execSQL("DROP TABLE IF EXISTS features")
+        db.execSQL("DROP TABLE IF EXISTS grids")
         onCreate(db)
     }
 
@@ -77,8 +81,7 @@ class FeatureCache(private val ctx: Context) : SQLiteOpenHelper(ctx, NAME, null,
 
     private fun read(): HashMap<String, FeatureRow> {
         val out = HashMap<String, FeatureRow>()
-        // Everything but the grids: those are read one by one, for the few photos that need them.
-        readableDatabase.rawQuery("SELECT $COLUMNS FROM features", null).use { c ->
+        readableDatabase.rawQuery("SELECT * FROM features", null).use { c ->
             val idx = (0 until c.columnCount).associateBy { c.getColumnName(it) }
             fun i(n: String) = idx.getValue(n)
             fun dbl(n: String): Double? = if (c.isNull(i(n))) null else c.getDouble(i(n))
@@ -142,7 +145,7 @@ class FeatureCache(private val ctx: Context) : SQLiteOpenHelper(ctx, NAME, null,
      * several threads at once.
      */
     fun grid(key: String): ByteArray? = try {
-        readableDatabase.rawQuery("SELECT grid FROM features WHERE key = ?", arrayOf(key)).use { c ->
+        readableDatabase.rawQuery("SELECT grid FROM grids WHERE key = ?", arrayOf(key)).use { c ->
             if (c.moveToFirst() && !c.isNull(0)) c.getBlob(0) else null
         }
     } catch (e: Exception) {
@@ -190,9 +193,18 @@ class FeatureCache(private val ctx: Context) : SQLiteOpenHelper(ctx, NAME, null,
                     v.put("med", f.median)
                     v.put("black", f.black)
                     v.put("white", f.white)
-                    v.put("grid", f.grid)
                 }
                 db.insertWithOnConflict("features", null, v, SQLiteDatabase.CONFLICT_REPLACE)
+                // The grid of what the file looks like now, or none: never one left from before it changed.
+                val grid = f?.grid
+                if (grid != null) {
+                    val g = ContentValues()
+                    g.put("key", r.key)
+                    g.put("grid", grid)
+                    db.insertWithOnConflict("grids", null, g, SQLiteDatabase.CONFLICT_REPLACE)
+                } else {
+                    db.delete("grids", "key = ?", arrayOf(r.key))
+                }
             }
             db.setTransactionSuccessful()
         } finally {
@@ -211,7 +223,10 @@ class FeatureCache(private val ctx: Context) : SQLiteOpenHelper(ctx, NAME, null,
             val db = writableDatabase
             db.beginTransaction()
             try {
-                for (k in gone) db.delete("features", "key = ?", arrayOf(k))
+                for (k in gone) {
+                    db.delete("features", "key = ?", arrayOf(k))
+                    db.delete("grids", "key = ?", arrayOf(k))
+                }
                 db.setTransactionSuccessful()
             } finally {
                 db.endTransaction()
@@ -233,14 +248,12 @@ class FeatureCache(private val ctx: Context) : SQLiteOpenHelper(ctx, NAME, null,
 
     companion object {
         /**
-         * Raising this recomputes every cached fingerprint (the database version). 3: photos are
+         * Raising this recomputes every cached fingerprint (the database version). 4: photos are
          * decoded at a power-of-two reduction, capture times are the camera's own clock, and every
-         * photo has a grid that tells an edit of part of it from a re-save.
+         * photo has a grid that tells an edit of part of it from a re-save, in a table of its own.
          */
-        const val ALGO = 3
+        const val ALGO = 4
         private const val NAME = "features.db"
-        private const val COLUMNS = "key, size, modified, sha, w, h, taken, camera, analysed, phash, v0, v1, v2, v3, crop, " +
-            "f0, f1, f2, f3, c0, c1, c2, c3, flat, cb, cr, sat, mean, contrast, sharp, detail, med, black, white, error, orig"
         private const val TAG = "PhotoCleaner"
     }
 }

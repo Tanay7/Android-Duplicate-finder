@@ -190,6 +190,7 @@ class Scanner(
     /**
      * Keeps [rows] in the cache. Once they are there, their grids (the largest part of what is known
      * about a photo) leave the memory: [gridOf] reads them back for the few photos that need them.
+     * (So a row is kept once: kept again without its grid, it would lose the one in the cache.)
      */
     private fun keep(rows: List<FeatureRow>) {
         if (cache.save(rows)) for (r in rows) r.features?.grid = null
