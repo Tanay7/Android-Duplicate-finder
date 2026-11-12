@@ -6,6 +6,7 @@ import android.app.ActivityOptions
 import android.content.Intent
 import android.content.IntentSender
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.net.Uri
 import android.os.Bundle
 import android.provider.MediaStore
@@ -61,9 +62,11 @@ class MainActivity : Activity() {
         push(FoldersScreen(this))
         val result = ScanState.result
         val wasShowingResults = savedInstanceState?.getBoolean(STATE_RESULTS) == true
+        val wasScanning = savedInstanceState?.getBoolean(STATE_SCANNING) == true
         when {
             ScanState.running -> push(ScanScreen(this))
-            result != null && wasShowingResults -> push(ResultsScreen(this, result))
+            // A scan that finished while the screen was gone: straight to what it found.
+            result != null && (wasShowingResults || wasScanning) -> push(ResultsScreen(this, result))
             // Android closed the app while its results were open: bring them back (quick: the
             // fingerprints are remembered, so nothing is read again).
             wasShowingResults -> restorePending = true
@@ -84,6 +87,7 @@ class MainActivity : Activity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putBoolean(STATE_RESULTS, stack.any { it is ResultsScreen })
+        outState.putBoolean(STATE_SCANNING, stack.any { it is ScanScreen })
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -109,6 +113,11 @@ class MainActivity : Activity() {
             restore()
         }
         top?.onResumed()
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        top?.onConfigurationChanged()
     }
 
     override fun onDestroy() {
@@ -313,6 +322,7 @@ class MainActivity : Activity() {
         private const val REQ_NOTIFY = 2
         private const val REQ_TRASH = 3
         private const val STATE_RESULTS = "results"
+        private const val STATE_SCANNING = "scanning"
         private const val EXTRA_FOLDERS = "folders"
         private const val EXTRA_AUTOSCAN = "autoscan"
         private const val LIGHT_BARS =

@@ -168,6 +168,38 @@ class Ui(val ctx: Context) {
         return TopBar(bar, t, s)
     }
 
+    /**
+     * A screen's bottom bar: a summary and the main button, stacked, or side by side when the screen
+     * is short (a phone on its side), so the list keeps most of the height.
+     */
+    inner class BottomBar(val summary: TextView, val button: TextView) {
+        val view = LinearLayout(ctx).apply { background = rounded(c.surface, 0f) }
+
+        fun layout() {
+            val short = ctx.resources.configuration.screenHeightDp < 480
+            view.removeAllViews()
+            if (short) {
+                view.orientation = LinearLayout.HORIZONTAL
+                view.gravity = Gravity.CENTER_VERTICAL
+                view.setPadding(dp(20), dp(6), dp(16), dp(6))
+                summary.maxLines = 2
+                view.addView(summary.lp(0, WRAP, 1f, r = dp(16)))
+                view.addView(button.lp(WRAP, dp(48)))
+            } else {
+                view.orientation = LinearLayout.VERTICAL
+                view.gravity = Gravity.NO_GRAVITY
+                view.setPadding(dp(20), dp(12), dp(20), dp(12))
+                summary.maxLines = 3
+                view.addView(summary.lp(b = dp(10)))
+                view.addView(button.lp(MATCH, dp(52)))
+            }
+        }
+
+        init {
+            layout()
+        }
+    }
+
     class TopBar(val view: LinearLayout, val title: TextView, val subtitle: TextView) {
         fun set(title: String, subtitle: String?) {
             this.title.text = title

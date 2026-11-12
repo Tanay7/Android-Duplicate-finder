@@ -125,12 +125,11 @@ class FoldersScreen(act: MainActivity) : Screen(act) {
 
     private val summary = ui.text("", 13f, c.onSurfaceVariant, lines = 2)
     private val scanButton = ui.button("Scan") { startScan() }
-    private val bottom = ui.vbox(summary.lp(b = ui.dp(10)), scanButton.lp(MATCH, ui.dp(52))).apply {
-        setPadding(ui.dp(20), ui.dp(12), ui.dp(20), ui.dp(12))
-        background = ui.rounded(c.surface, 0f)
-    }
+    private val bottom = ui.BottomBar(summary, scanButton)
 
-    override val view: View = ui.vbox(bar.view, list.lp(MATCH, 0, 1f), bottom)
+    override val view: View = ui.vbox(bar.view, list.lp(MATCH, 0, 1f), bottom.view)
+
+    override fun onConfigurationChanged() = bottom.layout()
 
     /**
      * Reloads the list when the media index changes while it shows: photos taken or copied meanwhile,
@@ -146,6 +145,7 @@ class FoldersScreen(act: MainActivity) : Screen(act) {
     private var observing = false
 
     override fun onShown() {
+        bottom.layout()
         refresh()
         load(force = act.mediaChanged)
         act.mediaChanged = false

@@ -22,6 +22,8 @@ abstract class Screen(val act: MainActivity) {
     open fun onHidden() {}
     open fun onResumed() {}
     open fun onDestroy() {}
+    /** The screen turned or changed size (the activity handles that itself, without a restart). */
+    open fun onConfigurationChanged() {}
 
     /** True when the screen handled Back itself. */
     open fun onBack(): Boolean = false

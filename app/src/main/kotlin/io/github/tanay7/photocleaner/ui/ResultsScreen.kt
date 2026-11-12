@@ -221,10 +221,7 @@ class ResultsScreen(act: MainActivity, private val r: ScanResult) : Screen(act) 
     }
     private val selText = ui.text("", 13f, c.onSurfaceVariant, lines = 2)
     private val trashButton = ui.button("Move to trash", Ui.Style.DANGER) { trashSelected() }
-    private val bottom = ui.vbox(selText.lp(b = ui.dp(10)), trashButton.lp(MATCH, ui.dp(52))).apply {
-        setPadding(ui.dp(20), ui.dp(12), ui.dp(20), ui.dp(12))
-        background = ui.rounded(c.surface, 0f)
-    }
+    private val bottom = ui.BottomBar(selText, trashButton)
 
     override val view: View = ui.vbox(
         bar.view,
@@ -234,10 +231,15 @@ class ResultsScreen(act: MainActivity, private val r: ScanResult) : Screen(act) 
             addView(empty.flp(MATCH, MATCH))
         }.lp(MATCH, 0, 1f),
         undoBar.lp(l = ui.dp(12), r = ui.dp(12), b = ui.dp(4)),
-        bottom,
+        bottom.view,
     )
 
-    override fun onShown() = refresh()
+    override fun onShown() {
+        bottom.layout()
+        refresh()
+    }
+
+    override fun onConfigurationChanged() = bottom.layout()
 
     private fun refresh() {
         val visible = r.groups.filter { r.shown(it) }
