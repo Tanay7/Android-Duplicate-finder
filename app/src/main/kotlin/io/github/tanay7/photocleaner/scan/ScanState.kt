@@ -88,16 +88,34 @@ class ScanResult(
     /**
      * After files have gone (to the trash, or deleted by another app): a group with a single file
      * left has nothing to compare any more and is no longer shown, so that file must not stay ticked
-     * where nobody can see it. Returns the files it unticked.
+     * where nobody can see it. Nor must the last copy that is left of one version of a picture (of an
+     * edit, say): it was ticked because a better copy of it stayed. Returns the files it unticked.
      */
     fun settle(): List<Int> {
         val out = ArrayList<Int>()
         for (g in groups) {
             if (g.type == GroupType.POOR) continue
             val live = live(g)
-            if (live.size == 1 && selected.remove(live[0].item)) out.add(live[0].item)
+            if (live.size == 1) {
+                if (selected.remove(live[0].item)) out.add(live[0].item)
+                continue
+            }
+            for ((version, left) in live.groupBy { it.version }) {
+                // A version that never had a second copy was ticked by hand, on purpose.
+                if (left.size == 1 && g.members.count { it.version == version } > 1 && selected.remove(left[0].item)) out.add(left[0].item)
+            }
         }
         return out
+    }
+
+    /**
+     * True if trashing what is ticked would leave no copy of a picture: every file that is left of
+     * the group is ticked, or every copy of one of its versions (the one to keep ticked by hand).
+     */
+    fun everyCopyTicked(g: Group): Boolean {
+        val live = live(g)
+        if (live.all { it.item in selected }) return true
+        return live.groupBy { it.version }.values.any { v -> v.size > 1 && v.all { it.item in selected } }
     }
 
     /** The members still on the phone. */

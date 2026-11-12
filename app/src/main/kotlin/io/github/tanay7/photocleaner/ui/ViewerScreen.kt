@@ -132,8 +132,11 @@ class ViewerScreen(
                     bmp?.recycle()
                     return@post
                 }
+                // (Coming back to a picture can start its loading twice: the earlier copy goes.)
+                val before = full
                 full = bmp
                 image.setBitmap(bmp, keepZoom = true)
+                before?.recycle()
             }
         }
     }

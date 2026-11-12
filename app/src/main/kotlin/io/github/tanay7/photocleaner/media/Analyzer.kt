@@ -24,6 +24,7 @@ import java.security.MessageDigest
 import java.util.concurrent.Callable
 import java.util.concurrent.CancellationException
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -41,6 +42,11 @@ object Analyzer {
         val scratch = Scratch()
         val buf = ByteArray(1 shl 20)
         val digest: MessageDigest = MessageDigest.getInstance("SHA-256")
+        /**
+         * Decoding memory this thread holds of the scan's [Budget] right now. Whoever takes it (sets
+         * it to 0) gives it back: the thread itself when it is done, or the scan when the thread hangs.
+         */
+        val held = AtomicLong()
     }
 
     /**
@@ -77,33 +83,38 @@ object Analyzer {
                 return failed(item, rd, "Can't read: ${e.message ?: e.javaClass.simpleName}")
             }
             if (!wantFeatures) return row(item, rd, sha, item.shownWidth, item.shownHeight, null, null, null, null)
+            // Memory first: decoding (and, for a RAW file, even reading its EXIF data) can take hundreds
+            // of megabytes. Waiting for it isn't time the file took: the watchdog's clock is reset meanwhile.
+            w.held.set(
+                rd.budget.acquire(Parallelism.decodeBytes(item.mime, item.name, item.width, item.height)) {
+                    w.touch()
+                    w.stop.get()
+                },
+            )
+            w.touch()
             var taken: Double? = null
             var camera: String? = null
             try {
-                Os.lseek(pfd.fileDescriptor, 0, OsConstants.SEEK_SET)
-                val exif = ExifInterface(FileInputStream(pfd.fileDescriptor))
-                val t = exif.dateTimeOriginal
-                if (t > 0) taken = t / 1000.0
-                camera = listOfNotNull(exif.getAttribute(ExifInterface.TAG_MAKE), exif.getAttribute(ExifInterface.TAG_MODEL))
-                    .joinToString(" ") { it.trim() }.trim().ifEmpty { null }
-            } catch (_: Exception) {
-                // no EXIF data (PNG, GIF) or unreadable: no capture time, so it can't be a burst frame
-            }
-            // Waiting for memory isn't time the file took: the watchdog's clock is reset meanwhile.
-            val got = rd.budget.acquire(Parallelism.decodeBytes(item.mime, item.name, item.width, item.height)) {
-                w.touch()
-                w.stop.get()
-            }
-            w.touch()
-            return try {
-                val d = decode(pfd, w)
-                row(item, rd, sha, d.width, d.height, taken, camera, d.features, null)
-            } catch (e: OutOfMemoryError) {
-                throw e
-            } catch (e: Exception) {
-                row(item, rd, sha, item.shownWidth, item.shownHeight, taken, camera, null, "$CANT_DECODE${e.message ?: e.javaClass.simpleName}")
+                try {
+                    Os.lseek(pfd.fileDescriptor, 0, OsConstants.SEEK_SET)
+                    val exif = ExifInterface(FileInputStream(pfd.fileDescriptor))
+                    val t = exif.dateTimeOriginal
+                    if (t > 0) taken = t / 1000.0
+                    camera = listOfNotNull(exif.getAttribute(ExifInterface.TAG_MAKE), exif.getAttribute(ExifInterface.TAG_MODEL))
+                        .joinToString(" ") { it.trim() }.trim().ifEmpty { null }
+                } catch (_: Exception) {
+                    // no EXIF data (PNG, GIF) or unreadable: no capture time, so it can't be a burst frame
+                }
+                return try {
+                    val d = decode(pfd, w)
+                    row(item, rd, sha, d.width, d.height, taken, camera, d.features, null)
+                } catch (e: OutOfMemoryError) {
+                    throw e
+                } catch (e: Exception) {
+                    row(item, rd, sha, item.shownWidth, item.shownHeight, taken, camera, null, "$CANT_DECODE${e.message ?: e.javaClass.simpleName}")
+                }
             } finally {
-                rd.budget.release(got)
+                rd.budget.release(w.held.getAndSet(0))
             }
         }
     }

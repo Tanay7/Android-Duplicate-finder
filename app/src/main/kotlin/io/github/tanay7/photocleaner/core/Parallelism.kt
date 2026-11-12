@@ -9,8 +9,12 @@ import kotlin.math.min
 
 /** How many threads a scan may run (Lean Reader's rule: one per core, as far as memory allows). */
 object Parallelism {
-    /** Native memory one reading thread may use at once: a decoder at work and its picture. */
-    const val NATIVE_PER_THREAD = 96L shl 20
+    /**
+     * Native memory to have free for each reading thread: a decoder at work on an ordinary photo and
+     * its reduced picture take about 20 MB. (Decoders that need far more, for HEIC, AVIF and RAW
+     * files, share the scan's [Budget] on top of this rule.)
+     */
+    const val NATIVE_PER_THREAD = 48L shl 20
     /** Java memory one reading thread needs: its reusable buffers (1024 px x 2 grey copies) and a read buffer. */
     const val HEAP_PER_THREAD = 16L shl 20
 
@@ -59,11 +63,14 @@ object Parallelism {
 
 /**
  * Shares out memory among threads that each need much of it for a moment. A thread waits while the
- * others' needs and its own exceed the [total]; a need larger than the total runs alone. First come,
+ * others' needs and its own exceed the total; a need larger than the total runs alone. First come,
  * first served, so a big need isn't kept waiting forever by a stream of small ones.
+ *
+ * No wait lasts forever: whoever holds units gives them back, and for a holder that hangs (a decoder
+ * stuck on a failing card) the scan calls [writeOff].
  */
 class Budget(total: Long) {
-    private val total = max(1, total)
+    private var total = max(1, total)
     private val lock = ReentrantLock()
     private val changed = lock.newCondition()
     private var used = 0L
@@ -76,21 +83,25 @@ class Budget(total: Long) {
      * CancellationException once [stop] says so.
      */
     fun acquire(need: Long, stop: () -> Boolean = { false }): Long {
-        val n = need.coerceIn(1, total)
         lock.withLock {
             val ticket = tickets++
-            var granted = false
+            var granted = 0L
             try {
-                while (ticket != serving || used + n > total) {
+                while (true) {
+                    // The total can shrink while waiting (see writeOff): a need is cut to what there is.
+                    val n = need.coerceIn(1, total)
+                    if (ticket == serving && used + n <= total) {
+                        used += n
+                        granted = n
+                        break
+                    }
                     if (stop()) throw CancellationException()
                     changed.await(100, TimeUnit.MILLISECONDS)
                 }
-                used += n
-                granted = true
             } finally {
                 // Whoever leaves the head of the queue lets the next one try; whoever leaves further
                 // back is skipped when its turn comes.
-                if (granted || ticket == serving) {
+                if (granted > 0 || ticket == serving) {
                     serving++
                     while (gaveUp.remove(serving)) serving++
                 } else {
@@ -98,12 +109,29 @@ class Budget(total: Long) {
                 }
                 changed.signalAll()
             }
+            return granted
         }
-        return n
     }
 
-    fun release(units: Long) = lock.withLock {
-        used -= units
-        changed.signalAll()
+    fun release(units: Long) {
+        if (units <= 0) return
+        lock.withLock {
+            used -= units
+            changed.signalAll()
+        }
+    }
+
+    /**
+     * [units] held by a thread that hangs and will never give them back: that memory is lost to this
+     * budget, and what is left is shared out among the others. Without this, everyone waiting
+     * behind a need that no longer fits would wait forever.
+     */
+    fun writeOff(units: Long) {
+        if (units <= 0) return
+        lock.withLock {
+            used -= units
+            total = max(1, total - units)
+            changed.signalAll()
+        }
     }
 }

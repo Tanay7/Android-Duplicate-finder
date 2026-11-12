@@ -33,7 +33,10 @@ done
 for p in READ_MEDIA_IMAGES READ_MEDIA_VIDEO ACCESS_MEDIA_LOCATION POST_NOTIFICATIONS; do adb shell pm grant $PKG android.permission.$p; done
 
 # -- test files -------------------------------------------------------------------------------
-(cd "$DATA" && find . -type f | sed 's|^\./||') | while IFS= read -r f; do
+# All but Pictures/CrashTest: those arrive for the crash test, so no earlier scan has read them.
+files() { (cd "$DATA" && find . -type f | sed 's|^\./||' | grep -v '^Pictures/CrashTest/'); }
+crashfiles() { (cd "$DATA" && find . -type f | sed 's|^\./||' | grep '^Pictures/CrashTest/'); }
+files | while IFS= read -r f; do
   adb push "$DATA/$f" "/sdcard/$f" >/dev/null || echo "push failed: $f"
 done
 adb shell mkdir -p /sdcard/Movies /sdcard/Download
@@ -43,7 +46,7 @@ if adb shell screenrecord --time-limit 3 /sdcard/Movies/clip.mp4 >/dev/null 2>&1
   VIDEOS=1
 fi
 # Files written through /sdcard reach the media index on their own; ask for a scan too, to be sure.
-(cd "$DATA" && find . -type f | sed 's|^\./||'; [ $VIDEOS = 1 ] && printf 'Movies/clip.mp4\nDownload/clip (1).mp4\n') | while IFS= read -r f; do
+(files; [ $VIDEOS = 1 ] && printf 'Movies/clip.mp4\nDownload/clip (1).mp4\n') | while IFS= read -r f; do
   adb shell "am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d 'file:///sdcard/$f'" >/dev/null 2>&1
 done
 indexed() {  # every image the media index lists, as folder/name
@@ -53,8 +56,8 @@ indexed() {  # every image the media index lists, as folder/name
 sized() {  # images Android has finished indexing (their size is known)
   adb shell content query --uri content://media/external/images/media --projection _size 2>/dev/null | grep -cE '_size=[1-9]'
 }
-want=$(cd "$DATA" && find . -type f | wc -l)
-wantSized=$(cd "$DATA" && find . -type f -size +0 | wc -l)     # an empty file never gets a size
+want=$(files | wc -l)
+wantSized=$(files | while IFS= read -r f; do [ -s "$DATA/$f" ] && echo "$f"; done | wc -l)     # an empty file never gets a size
 for i in $(seq 1 90); do
   have=$(indexed | wc -l)
   done_=$(sized)
@@ -139,7 +142,7 @@ fi
 echo "== everything is ticked"
 r=$(scan '*'); echo "$r"
 sleep 1   # the lines for each group follow the result
-expect "$r" photos 28
+expect "$r" photos 26
 expect "$r" videos $((2 * VIDEOS))
 expect "$r" groups $((3 + VIDEOS))
 expect "$r" lookalike 1
@@ -150,14 +153,18 @@ expect "$r" undecodable 2          # the truncated photo and the text file: repo
 expect "$r" unreadable 0
 expect "$r" quarantined 0
 [ "$(field "$r" threads)" -ge 1 ] && ok "read on $(field "$r" threads) threads, $(field "$r" cores) cores" || fail "no thread count"
-TICKED=$((8 + VIDEOS))
+PHOTOS_TICKED=9                    # 4 copies of the original, the edit's small copy, 4 burst frames
+TICKED=$((PHOTOS_TICKED + VIDEOS))
 expect "$r" suggested $TICKED
 grep ' GROUP lookalike ' logcat.txt | tail -1 | grep -q 'KEEP:DCIM/Camera/IMG_0001.jpg' &&
   ok "the camera original is kept" || fail "the camera original isn't the kept copy"
 grep ' GROUP lookalike ' logcat.txt | tail -1 | grep -q 'TRASH:Pictures/Edited/turned.jpg' &&
   ok "the turned copy is found" || fail "the turned copy wasn't matched"
-grep ' GROUP lookalike ' logcat.txt | tail -1 | grep -q 'ASK:Pictures/Edited/brighter.jpg' &&
-  ok "the brighter edit is shown, not ticked" || fail "the brighter edit isn't an unticked look-alike"
+# an edit is a version of its own: kept as well, and its own copy is what goes
+grep ' GROUP lookalike ' logcat.txt | tail -1 | grep -q 'KEEP:Pictures/Edited/brighter.jpg' &&
+  ok "the brighter edit is kept as well" || fail "the brighter edit isn't kept as a version of its own"
+grep ' GROUP lookalike ' logcat.txt | tail -1 | grep -q 'TRASH:Pictures/Edited/brighter_small.jpg' &&
+  ok "the edit's small copy goes" || fail "the edit's small copy isn't ticked"
 last=$(grep -n ' RESULT ' logcat.txt | tail -1 | cut -d: -f1)
 if tail -n +"$last" logcat.txt | grep ' GROUP ' | grep -qE 'DOC_0|settings_'; then
   fail "different pages or screens were grouped"
@@ -187,8 +194,9 @@ if tap "^Move $TICKED to trash$"; then
   after=$(indexed)
   gone=$(comm -23 <(echo "$before" | sort) <(echo "$after" | sort))
   echo "left the media index:"; echo "$gone"
-  [ "$(echo "$gone" | grep -c .)" = "8" ] && ok "8 photos in the trash" || fail "$(echo "$gone" | grep -c .) photos left the index, expected 8"
+  [ "$(echo "$gone" | grep -c .)" = "$PHOTOS_TICKED" ] && ok "$PHOTOS_TICKED photos in the trash" || fail "$(echo "$gone" | grep -c .) photos left the index, expected $PHOTOS_TICKED"
   echo "$after" | grep -qx 'DCIM/Camera/IMG_0001.jpg' && ok "the kept original is still there" || fail "the kept original is gone"
+  echo "$after" | grep -qx 'Pictures/Edited/brighter.jpg' && ok "the kept edit is still there" || fail "the kept edit is gone"
   echo "$after" | grep -qx 'Download/IMG_0001 (1).jpg' && fail "the copy is still there" || ok "the copy is gone"
   if tap '^Undo$'; then
     sleep 3
@@ -226,6 +234,17 @@ adb shell input keyevent KEYCODE_BACK; sleep 1
 if [ -n "$DEBUG_APK" ] && [ -f "$DEBUG_APK" ]; then
   echo "== a photo that makes the app die is left out by the third scan"
   adb install -r "$DEBUG_APK" >/dev/null 2>&1 || fail "the test build did not install"
+  # three new photos, one of which the test build dies on
+  n0=$(indexed | wc -l)
+  crashfiles | while IFS= read -r f; do
+    adb push "$DATA/$f" "/sdcard/$f" >/dev/null || echo "push failed: $f"
+    adb shell "am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d 'file:///sdcard/$f'" >/dev/null 2>&1
+  done
+  for i in $(seq 1 60); do
+    [ "$(indexed | grep -c '^Pictures/CrashTest/')" -ge "$(crashfiles | wc -l)" ] && [ "$(sized)" -ge "$((n0 + $(crashfiles | wc -l)))" ] && break
+    sleep 2
+  done
+  [ "$(indexed | grep -c '^Pictures/CrashTest/')" -ge 3 ] || fail "the crash-test photos are missing from the media index"
   adb shell am start -W -n $PKG/.MainActivity >/dev/null; sleep 3
   for round in 1 2; do
     n0=$(grep -c 'TEST dying' logcat.txt)

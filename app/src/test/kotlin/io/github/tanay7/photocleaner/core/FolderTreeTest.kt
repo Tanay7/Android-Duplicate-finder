@@ -110,7 +110,8 @@ class ParallelismTest {
         val gb = 1L shl 30
         assertEquals(8, Parallelism.threads(8, 4 * gb, 400L shl 20))          // plenty: every core
         assertEquals(12, Parallelism.threads(12, 8 * gb, 1 * gb))
-        assertEquals(3, Parallelism.threads(8, 300L shl 20, 400L shl 20))     // little free memory: fewer
+        assertEquals(8, Parallelism.threads(8, 400L shl 20, 400L shl 20))     // 48 MB free for each is enough
+        assertEquals(3, Parallelism.threads(8, 150L shl 20, 400L shl 20))     // little free memory: fewer
         assertEquals(2, Parallelism.threads(8, 4 * gb, 40L shl 20))           // little heap left: fewer
         assertEquals(1, Parallelism.threads(8, 0, 0))                          // never none
         assertEquals(1, Parallelism.threads(8, -5, 10))
@@ -191,6 +192,50 @@ class BudgetAndJournalTest {
         // the one who left doesn't block those behind it
         budget.release(held)
         assertEquals(7L, budget.acquire(7))
+    }
+
+    @Test fun aHolderThatHangsDoesNotKeepTheOthersWaitingForever() {
+        val budget = Budget(100)
+        val hung = budget.acquire(70)          // a decoder that never comes back
+        val got = java.util.concurrent.atomic.AtomicLong(-1)
+        val small = java.util.concurrent.atomic.AtomicLong(-1)
+        // first in the queue: a need that no longer fits; behind it, one that would
+        val big = kotlin.concurrent.thread { got.set(budget.acquire(60)) }
+        Thread.sleep(100)
+        val little = kotlin.concurrent.thread { small.set(budget.acquire(10)) }
+        Thread.sleep(200)
+        assertTrue(big.isAlive)
+        assertTrue(little.isAlive)             // first come, first served: it waits behind the big one
+        // the scan gives up on the hung thread: its memory is lost, the rest is shared out
+        budget.writeOff(hung)
+        big.join(5_000)
+        assertFalse(big.isAlive)
+        assertEquals(30L, got.get())           // cut to what there is now: it runs alone
+        assertTrue(little.isAlive)
+        budget.release(got.get())
+        little.join(5_000)
+        assertEquals(10L, small.get())
+        // if the hung thread ever comes back, it has nothing left to give back
+        budget.release(0)
+        budget.release(small.get())
+        assertEquals(30L, budget.acquire(1000))
+    }
+
+    @Test fun aJournalThatWasClosedTakesNoMoreNotes() {
+        val file = java.io.File.createTempFile("journal", ".bin")
+        try {
+            val j = Journal.open(file)!!
+            j.begin(0, "external_primary/i/1", alone = true)
+            j.close()
+            // a reading thread that is still at work when the scan has ended
+            j.begin(1, "external_primary/i/2", alone = true)
+            j.end(0)
+            j.close()
+            assertEquals(0L, file.length())
+            assertTrue(Journal.read(file).isEmpty)
+        } finally {
+            file.delete()
+        }
     }
 
     @Test fun journalRemembersWhatWasInFlightWhenTheAppDied() {

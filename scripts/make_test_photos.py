@@ -8,7 +8,8 @@ Pictures/Copies/IMG_0001.jpg      the same file, byte for byte
 Download/IMG_0001 (1).jpg         the same file again, with a copy name
 Pictures/Edited/small.jpg         the photo at half size, saved again          -> look-alike
 Pictures/Edited/turned.jpg        the photo turned a quarter, saved again      -> look-alike (turned)
-Pictures/Edited/brighter.jpg      the photo made brighter: an edit             -> look-alike, not ticked
+Pictures/Edited/brighter.jpg      the photo made brighter: an edit             -> a version of its own, kept as well
+Pictures/Edited/brighter_small.jpg  the edit at half size, saved again         -> a copy of the edit
 DCIM/Camera/BURST_0[1-5].jpg      5 shots a second apart while panning; the 3rd is blurred -> burst
 DCIM/Camera/DOC_0[1-5].jpg        5 pages of a document, photographed 2 s apart -> nothing: not a burst
 Pictures/Screenshots/settings_[12].png  two different settings screens          -> nothing: not look-alikes
@@ -24,9 +25,10 @@ The pages and the screens are chosen so that a 64-bit perceptual hash alone take
 frames and look-alikes (each page is within 10 bits of the one before, the screens 6 bits apart);
 the screens, mostly white, would also count as overexposed if screenshots were judged like photos.
 
-Expected from a scan of everything: one look-alike group of 6 (the camera original kept, 4 ticked,
-the brighter edit left alone), one burst of 5 (a sharp frame kept, 4 ticked) and the dark shot
-listed on its own; the broken files are reported, and stop nothing.
+Expected from a scan of everything: one look-alike group of 7 (the camera original kept with 4
+copies of it ticked, the brighter edit kept as well with its small copy ticked), one burst of 5 (a
+sharp frame kept, 4 ticked) and the dark shot listed on its own; the broken files are reported, and
+stop nothing.
 """
 import os
 import random
@@ -138,7 +140,9 @@ def main(out):
         shutil.copyfile(orig, os.path.join(out, rel))
     save(a.resize((800, 600), Image.LANCZOS), out, "Pictures/Edited/small.jpg", quality=75)
     save(a.transpose(Image.Transpose.ROTATE_90), out, "Pictures/Edited/turned.jpg", quality=70)
-    save(ImageEnhance.Brightness(a).enhance(1.2), out, "Pictures/Edited/brighter.jpg", quality=90)
+    brighter = ImageEnhance.Brightness(a).enhance(1.2)
+    save(brighter, out, "Pictures/Edited/brighter.jpg", quality=90)
+    save(brighter.resize((800, 600), Image.LANCZOS), out, "Pictures/Edited/brighter_small.jpg", quality=80)
 
     wide = scene(2, 1700, 1200)
     for k in range(5):

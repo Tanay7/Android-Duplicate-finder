@@ -8,7 +8,7 @@ android {
         minSdk = 36      // Android 16
         targetSdk = 37   // Android 17
         versionCode = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInt() // grows every CI build, so updates install in place
-        versionName = "1.0"
+        versionName = "1.1"
     }
     // One stable key for every build (CI included), so new APKs install over old ones and keep your
     // folder choice and the fingerprint cache. It's committed, so it's only fit for sideloading.

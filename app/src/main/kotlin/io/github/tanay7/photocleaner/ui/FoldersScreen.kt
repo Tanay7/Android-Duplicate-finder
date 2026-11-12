@@ -507,7 +507,7 @@ class FoldersScreen(act: MainActivity) : Screen(act) {
         }
         val photos = switchRow("Photos", "Identical copies of photos", o.photos)
         val videos = switchRow("Videos", "Identical copies of videos", o.videos)
-        val similar = switchRow("Look-alike photos", "Resized, re-saved, turned or cropped copies. Edits are shown, never ticked", o.similar)
+        val similar = switchRow("Look-alike photos", "Resized, re-saved, turned or cropped copies. Edits are kept too: only their own copies are ticked", o.similar)
         val bursts = switchRow("Burst shots", "Near-identical shots a moment apart: keeps the sharpest", o.bursts)
         val poor = switchRow("Blurry and dark photos", "Camera photos only. Listed on their own, never ticked for you", o.poor)
         val strict = RadioButton(ctx).apply { text = "Strict: only near-identical pictures"; id = View.generateViewId() }
@@ -567,7 +567,7 @@ class FoldersScreen(act: MainActivity) : Screen(act) {
             text = """
                 Photo Cleaner finds identical copies, look-alike photos (resized, re-saved, turned or cropped), burst shots, and blurry or dark photos in the folders you choose. For each group it suggests the copy to keep: the largest and sharpest, an original from the camera over one saved from a chat, and always your favourites.
 
-                It only ticks what it is sure of. An edited version, a RAW file's JPEG twin, a favourite or a picture that merely has the same layout (two pages of text, two screens of an app) is never ticked for you, and what you untick stays unticked in later scans.
+                It only ticks what it is sure of. An edit, a crop and a RAW file's JPEG twin are versions of their own: the best copy of each is kept, and only its own duplicates are ticked. A favourite, or a picture that merely has the same layout (two pages of text, two screens of an app), is never ticked for you, and what you untick stays unticked in later scans.
 
                 Nothing is deleted for good. Files you remove go to the phone's trash and stay there for 30 days: Undo brings them straight back, and so does the trash in the Files or Photos app.
 

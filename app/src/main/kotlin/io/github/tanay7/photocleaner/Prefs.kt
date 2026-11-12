@@ -105,10 +105,13 @@ object Prefs {
         sp(ctx).edit().remove("ticks").apply()
     }
 
-    /** Forgets the keeps of files that are gone, so the list doesn't grow forever. */
-    @Synchronized fun pruneKeeps(ctx: Context, live: Set<String>) {
+    /**
+     * Forgets the keeps of files that are gone, so the list doesn't grow forever. Only on the
+     * [volumes] that are in the phone: what you kept on an SD card stays kept while the card is out.
+     */
+    @Synchronized fun pruneKeeps(ctx: Context, live: Set<String>, volumes: Set<String>) {
         val keeps = keepsLive(ctx)
-        if (!keeps.retainAll(live)) return
+        if (!keeps.removeAll { it !in live && it.substringBefore('/') in volumes }) return
         sp(ctx).edit().putStringSet("keeps", HashSet(keeps)).apply()
     }
 

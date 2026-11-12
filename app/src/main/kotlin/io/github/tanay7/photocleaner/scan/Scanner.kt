@@ -26,6 +26,7 @@ import io.github.tanay7.photocleaner.media.FeatureRow
 import io.github.tanay7.photocleaner.media.MediaIndex
 import io.github.tanay7.photocleaner.media.MediaItem
 import java.io.File
+import java.util.Locale
 import java.util.concurrent.CancellationException
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
@@ -33,6 +34,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicIntegerArray
 import java.util.concurrent.atomic.AtomicLongArray
+import java.util.concurrent.atomic.AtomicReferenceArray
 
 /**
  * One scan of the chosen folders:
@@ -61,6 +63,11 @@ class Scanner(
     private var journal: Journal? = null
     private var suspects: Set<String> = emptySet()
     private var quarantined = 0
+    /**
+     * Every reading thread of the scan has a journal slot of its own, never used again: a thread
+     * that hangs on a file may come back much later, and must not end the note of another one.
+     */
+    private val journalSlots = AtomicInteger()
 
     fun run(): ScanResult {
         val t0 = SystemClock.elapsedRealtime()
@@ -78,11 +85,14 @@ class Scanner(
         try {
             val known = cache.load()
             val liveKeys = everything.mapTo(HashSet()) { it.key }
+            // With access to every photo, what the media index no longer lists is gone, on the
+            // volumes that are in the phone (an SD card that is out keeps what is known about it).
+            val volumes = if (req.fullAccess) MediaIndex.volumes(ctx) else emptySet()
             if (req.fullAccess) {
-                cache.prune(liveKeys, known.keys, MediaIndex.volumes(ctx))
-                Prefs.pruneKeeps(ctx, liveKeys)
+                cache.prune(liveKeys, known.keys, volumes)
+                Prefs.pruneKeeps(ctx, liveKeys, volumes)
             }
-            afterACrash(journalFile, everything, liveKeys, known, original)
+            afterACrash(journalFile, everything, liveKeys, volumes, known, original)
             journal = Journal.open(journalFile)
 
             rows = arrayOfNulls(items.size)
@@ -199,7 +209,9 @@ class Scanner(
      * become suspects: this scan reads them one at a time. A file that was being read on its own when
      * the app died of a crash is the culprit: it is left out from now on (until it changes).
      */
-    private fun afterACrash(file: File, everything: List<MediaItem>, liveKeys: Set<String>, known: HashMap<String, FeatureRow>, original: Boolean) {
+    private fun afterACrash(
+        file: File, everything: List<MediaItem>, liveKeys: Set<String>, volumes: Set<String>, known: HashMap<String, FeatureRow>, original: Boolean,
+    ) {
         val left = Journal.read(file)
         var now = Prefs.suspects(ctx)
         if (!left.isEmpty) {
@@ -213,7 +225,7 @@ class Scanner(
             }
             now = now + left.together + left.alone - culprits
         }
-        if (req.fullAccess) now = now.filterTo(HashSet()) { it in liveKeys }
+        now = now.filterTo(HashSet()) { it in liveKeys || it.substringBefore('/') !in volumes }
         suspects = now
         Prefs.setSuspects(ctx, now)
     }
@@ -277,11 +289,15 @@ class Scanner(
         val results = LinkedBlockingQueue<Done>()
         val current = AtomicIntegerArray(slots).apply { for (w in 0 until slots) set(w, -1) }
         val since = AtomicLongArray(slots)
+        val workers = AtomicReferenceArray<Analyzer.Worker?>(slots)
+        val noted = AtomicIntegerArray(slots)
         val stop = AtomicBoolean()
 
         fun spawn(): Boolean {
             val w = started.getAndIncrement()
             if (w >= slots) return false
+            val note = journalSlots.getAndIncrement()
+            noted.set(w, note)
             alive.incrementAndGet()
             return try {
                 Thread({
@@ -290,6 +306,7 @@ class Scanner(
                         // high enough not to be confined to the slow cores the way background threads can be.
                         Process.setThreadPriority(Process.THREAD_PRIORITY_DEFAULT + Process.THREAD_PRIORITY_LESS_FAVORABLE)
                         val worker = Analyzer.Worker(stop) { since.set(w, SystemClock.elapsedRealtime()) }
+                        workers.set(w, worker)
                         while (!stop.get()) {
                             // A place among the threads allowed to work: fewer while the phone is hot.
                             val busy = working.get()
@@ -304,7 +321,7 @@ class Scanner(
                                 val i = todo[k]
                                 since.set(w, SystemClock.elapsedRealtime())
                                 current.set(w, k)
-                                journal?.begin(w, items[i].key, alone)
+                                journal?.begin(note, items[i].key, alone)
                                 if (debuggable && items[i].name == CRASH_TEST) {
                                     // Stands in for a decoder crashing, in test builds only.
                                     Log.i(TAG, "TEST dying while reading ${items[i].path}")
@@ -320,7 +337,7 @@ class Scanner(
                                 } catch (e: Throwable) {
                                     Analyzer.failed(items[i], reading, "Failed: ${e.message ?: e.javaClass.simpleName}")
                                 } finally {
-                                    journal?.end(w)
+                                    journal?.end(note)
                                     current.set(w, -1)
                                 }
                                 results.put(Done(k, row))
@@ -391,6 +408,11 @@ class Scanner(
                         rows[todo[k]] = Analyzer.failed(items[todo[k]], reading, "Timed out: the file couldn't be read")
                         if (alone) cleared.add(items[todo[k]].key)
                         Log.w(TAG, "Gave up on ${items[todo[k]].path}")
+                        // The thread may never come back. The memory its decoder holds is lost to the
+                        // others (or they would wait for it forever), and the file is no longer in
+                        // flight: it isn't to blame if another one stops the app later.
+                        workers.get(w)?.held?.getAndSet(0)?.let { reading.budget.writeOff(it) }
+                        journal?.end(noted.get(w))
                         spawn()         // a spare takes the place of the thread this file holds
                     }
                     if (given[k]) stuck++
@@ -455,7 +477,7 @@ class Scanner(
                 "identical=${byCat[Category.IDENTICAL] ?: 0} lookalike=${byCat[Category.LOOKALIKE] ?: 0} " +
                 "bursts=${byCat[Category.BURSTS] ?: 0} videogroups=${byCat[Category.VIDEOS] ?: 0} poor=${byCat[Category.POOR] ?: 0}" +
                 " suggested=$suggested unreadable=${r.unreadable} undecodable=$undecodable quarantined=$quarantined" +
-                " original=${if (original) 1 else 0} threads=${r.threads} cores=$cores seconds=${"%.1f".format(r.seconds)}",
+                " original=${if (original) 1 else 0} threads=${r.threads} cores=$cores seconds=${"%.1f".format(Locale.ROOT, r.seconds)}",
         )
         if (req.verbose) {
             for (g in r.groups) Log.i(TAG, "GROUP ${describe(r, g)}")

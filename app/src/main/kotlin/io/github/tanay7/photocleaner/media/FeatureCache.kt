@@ -30,9 +30,12 @@ class FeatureRow(
      */
     val original: Boolean = true,
 ) {
-    /** Still describes the file: same size, not changed since, read the same way. */
+    /**
+     * Still describes the file: same size, not changed since, read the same way. (A file that stops
+     * the app stays left out however it would be read.)
+     */
     fun matches(m: MediaItem, original: Boolean) =
-        size == m.size && modified == m.modified && this.original == original && m.size > 0
+        size == m.size && modified == m.modified && m.size > 0 && (this.original == original || error == Analyzer.QUARANTINED)
 }
 
 /**

@@ -126,26 +126,75 @@ class MatcherTest {
             photo("b.jpg", feat(h, cb = 140f, cr = 110f, sat = 30f)),
         )
         assertTrue(match(items).isEmpty())
-        // but a black-and-white copy matches its colour original: shown, and left for you to decide
+        // but a black-and-white copy matches its colour original: shown as another version, and kept as well
         val bw = listOf(photo("a.jpg", feat(h, cb = 100f, cr = 140f, sat = 30f)), photo("b.jpg", feat(h, sat = 1f)))
-        val m = match(bw).single().members.first { !it.keeper }
+        val g = match(bw).single()
+        val m = g.members.single { it.version == 1 }
+        assertTrue(m.keeper)
         assertTrue(m.edited)
-        assertFalse(m.suggestTrash)
+        assertTrue(g.members.none { it.suggestTrash })
     }
 
-    @Test fun anEditedCopyIsShownButNeverPreselected() {
+    @Test fun anEditedCopyIsAVersionOfItsOwnAndKept() {
         val h = far()
         fun pair(f: ImageFeatures) = match(listOf(photo("DCIM/Camera/a.jpg", feat(h), size = 4_000_000), photo("Pictures/b.jpg", f, size = 3_000_000)))
-            .single().members.first { !it.keeper }
+            .single().members.first { it.item == 1 }
         assertTrue(pair(feat(h)).suggestTrash)                                   // a plain re-save
         assertTrue(pair(feat(h, mean = 123f, contrast = 52f)).suggestTrash)      // as much as resizing changes
+        assertEquals(0, pair(feat(h)).version)
         for (edit in listOf(feat(h, mean = 135f), feat(h, contrast = 62f), feat(h, cb = 132f, cr = 125f, sat = 9f), feat(h, sat = 5f))) {
             val m = pair(edit)
-            assertEquals(Relation.LOOKALIKE, m.relation)
+            assertTrue(m.keeper)
+            assertEquals(1, m.version)
+            assertEquals(Relation.KEEP, m.relation)
             assertTrue(m.edited)
             assertFalse(m.suggestTrash)
             assertTrue(m.note!!.contains("edit"))
         }
+    }
+
+    @Test fun everyVersionKeepsItsBestCopyAndLosesItsDuplicates() {
+        val h = far()
+        val edit = feat(h, mean = 140f)
+        val items = listOf(
+            photo("DCIM/Camera/a.jpg", feat(h), size = 4_000_000),
+            photo("Pictures/WhatsApp/a.jpg", feat(flip(h, 2)), size = 400_000, w = 1600, h = 1200),
+            // the edit is the larger file: the best copy overall, but no reason to leave the original's copy unticked
+            photo("Pictures/Edited/a_bright.jpg", edit, size = 5_000_000, sha = "e"),
+            photo("Download/a_bright.jpg", edit, size = 500_000, w = 1600, h = 1200),
+            photo("Download/a_bright (1).jpg", edit, size = 5_000_000, sha = "e"),
+            photo("Download/a_bright (2).jpg", edit, size = 5_000_000, sha = "e"),
+        )
+        val g = match(items).single()
+        assertEquals(GroupType.SIMILAR, g.type)
+        assertEquals(2, g.keeper)
+        // the best copy and its duplicates first, then the other version the same way
+        assertEquals(listOf(2, 4, 5, 3, 0, 1), g.members.map { it.item })
+        assertEquals(listOf(0, 0, 0, 0, 1, 1), g.members.map { it.version })
+        assertEquals(listOf(true, false, false, false, true, false), g.members.map { it.keeper })
+        assertEquals(listOf(false, true, true, true, false, true), g.members.map { it.suggestTrash })
+        val original = g.members[4]
+        assertTrue(original.edited)
+        assertTrue(original.note!!.contains("kept as well"))
+        assertEquals(Relation.LOOKALIKE, g.members[5].relation)
+        assertEquals(listOf(Relation.KEEP, Relation.IDENTICAL, Relation.IDENTICAL, Relation.LOOKALIKE), g.members.take(4).map { it.relation })
+    }
+
+    @Test fun aCopyThatDriftedFromItsVersionsBestCopyIsNotPreselected() {
+        val h = far()
+        // each a little brighter than the one before: one version, but the last is an edit of the first
+        val items = listOf(
+            photo("DCIM/Camera/a.jpg", feat(h, mean = 120f), size = 4_000_000),
+            photo("Pictures/b.jpg", feat(h, mean = 126f), size = 3_000_000),
+            photo("Pictures/c.jpg", feat(h, mean = 132f), size = 2_000_000),
+        )
+        val g = match(items).single()
+        assertEquals(listOf(0, 0, 0), g.members.map { it.version })
+        assertTrue(g.members.first { it.item == 1 }.suggestTrash)
+        val c = g.members.first { it.item == 2 }
+        assertFalse(c.keeper)
+        assertTrue(c.edited)
+        assertFalse(c.suggestTrash)
     }
 
     @Test fun theDetailsMustMatchToo() {
@@ -155,29 +204,39 @@ class MatcherTest {
         // the same layout, other details (another page of text): not a look-alike at all
         assertTrue(groups(80).isEmpty())
         assertTrue(groups(49).isEmpty())
-        // alike, but not surely the same picture: shown, never pre-selected
-        val maybe = groups(40).single().members.first { !it.keeper }
-        assertEquals(Relation.LOOKALIKE, maybe.relation)
+        // alike, but not surely the same picture: shown, and kept as well
+        val maybe = groups(40).single().members.first { it.item == 1 }
+        assertTrue(maybe.keeper)
+        assertEquals(1, maybe.version)
         assertFalse(maybe.suggestTrash)
         assertTrue(maybe.note!!.contains("details"))
         assertEquals(100f * (255 - 40) / 255, maybe.score!!, 0.01f)
         // surely the same
-        assertTrue(groups(32).single().members.first { !it.keeper }.suggestTrash)
+        assertTrue(groups(32).single().members.first { it.item == 1 }.suggestTrash)
         // strict wants nearly every detail to match
         assertTrue(groups(20, o = MatchOptions(maxBits = 4, poor = false)).isEmpty())
-        assertTrue(groups(16, o = MatchOptions(maxBits = 4, poor = false)).single().members.first { !it.keeper }.suggestTrash)
+        assertTrue(groups(16, o = MatchOptions(maxBits = 4, poor = false)).single().members.first { it.item == 1 }.suggestTrash)
     }
 
     @Test fun looseFindsMoreButTicksNoMore() {
         val h = far()
-        val items = listOf(photo("DCIM/Camera/a.jpg", feat(h), size = 4_000_000), photo("Pictures/b.jpg", feat(flip(h, 10)), size = 3_000_000))
-        assertTrue(match(items).isEmpty())
-        val m = match(items, MatchOptions(maxBits = 12, poor = false)).single().members.first { !it.keeper }
-        assertEquals(Relation.LOOKALIKE, m.relation)
-        assertFalse(m.suggestTrash)
+        val items = listOf(
+            photo("DCIM/Camera/a.jpg", feat(h), size = 4_000_000),
+            photo("Pictures/b.jpg", feat(flip(h, 10)), size = 3_000_000),
+            photo("Pictures/b_small.jpg", feat(flip(h, 10)), size = 300_000, w = 1600, h = 1200),
+        )
+        // normally b isn't a look-alike of a at all: only b and its small copy are
+        assertEquals(listOf(1, 2), match(items).single().members.map { it.item })
+        val g = match(items, MatchOptions(maxBits = 12, poor = false)).single()
+        val b = g.members.first { it.item == 1 }
+        assertTrue(b.keeper)                          // shown with a, and kept as well
+        assertEquals(1, b.version)
+        assertTrue(b.note!!.contains("details"))
+        // still only what is surely a copy of something kept is ticked
+        assertEquals(listOf(2), g.members.filter { it.suggestTrash }.map { it.item })
     }
 
-    @Test fun aRawFileAndItsJpegAreNeverPreselected() {
+    @Test fun aRawFileAndItsJpegAreBothKept() {
         val h = far()
         val items = listOf(
             photo("DCIM/Camera/IMG_7.dng", feat(h), size = 25_000_000),
@@ -186,10 +245,39 @@ class MatcherTest {
         )
         val g = match(items).single()
         assertEquals(0, g.keeper)
-        assertTrue(g.members.none { it.suggestTrash })
-        assertTrue(g.members.filter { !it.keeper }.all { it.note!!.contains("RAW") })
+        val jpeg = g.members.first { it.item == 1 }
+        assertTrue(jpeg.keeper)
+        assertTrue(jpeg.note!!.contains("developed"))
+        // the smaller copy of the JPEG is a duplicate of the JPEG, whatever the RAW file is
+        val small = g.members.first { it.item == 2 }
+        assertEquals(1, small.version)
+        assertEquals(Relation.LOOKALIKE, small.relation)
+        assertTrue(small.suggestTrash)
+        // a JPEG larger than the RAW file is the best copy; the RAW file is kept as well
+        val bigger = match(listOf(items[0], photo("DCIM/Camera/IMG_7.jpg", feat(h), size = 4_000_000, w = 8000, h = 6000))).single()
+        assertEquals(1, bigger.keeper)
+        assertTrue(bigger.members.all { it.keeper })
+        assertTrue(bigger.members.first { it.item == 0 }.note!!.contains("RAW"))
         // without the RAW file, the smaller copy goes as usual
         assertTrue(match(items.drop(1)).single().members.first { !it.keeper }.suggestTrash)
+    }
+
+    @Test fun aBurstSavedAsRawAndJpegKeepsTheSharpestOfEach() {
+        val h = far()
+        val detail = listOf(60f, 120f, 90f)
+        val items = (0 until 3).flatMap {
+            listOf(
+                photo("DCIM/Camera/B_$it.dng", feat(h, detail = detail[it]), size = 25_000_000, taken = 100.0 + it, camera = "Pixel 9"),
+                photo("DCIM/Camera/B_$it.jpg", feat(h, detail = detail[it] + 5), size = 4_000_000, taken = 100.0 + it, camera = "Pixel 9"),
+            )
+        }
+        val g = match(items).single()
+        assertEquals(GroupType.BURST, g.type)
+        assertEquals(6, g.burstShots)
+        assertEquals(setOf(2, 3), g.members.filter { it.keeper }.map { it.item }.toSet())   // B_1.dng and B_1.jpg
+        assertEquals(4, g.members.count { it.suggestTrash })
+        assertTrue(g.members.all { it.frame })
+        assertTrue(g.members.filter { !it.keeper }.all { it.relation == Relation.BURST })
     }
 
     @Test fun aBurstFrameFarFromTheKeptShotIsNotPreselected() {
@@ -251,14 +339,28 @@ class MatcherTest {
         val base = Scenes.scene(31, 800, 600)
         fun other(p: Pic) = match(
             listOf(photo("DCIM/Camera/a.jpg", base.features(), size = 4_000_000, w = 800, h = 600), photo("Pictures/b.jpg", p.features(), size = 1_000_000, w = p.w, h = p.h)),
-        ).single().members.first { !it.keeper }
+        ).single().members.first { it.item == 1 }
         assertTrue(other(Scenes.resize(base, 400, 300)).suggestTrash)
         assertTrue(other(Scenes.noise(Scenes.resize(base, 400, 300), 4.0, 1)).suggestTrash)
-        for (edit in listOf(Scenes.scale(base, 1.15), Scenes.contrast(base, 0.8), Scenes.grey(base), Scenes.tint(base, 12, 0, -12))) {
+        val edits = listOf(Scenes.scale(base, 1.15), Scenes.contrast(base, 0.8), Scenes.grey(base), Scenes.tint(base, 12, 0, -12))
+        for (edit in edits) {
             val m = other(edit)
+            assertTrue(m.keeper)
             assertTrue(m.edited)
             assertFalse(m.suggestTrash)
         }
+        // every edit with a small copy of its own: all the versions are kept, all their copies can go
+        val items = listOf(photo("DCIM/Camera/a.jpg", base.features(), size = 4_000_000, w = 800, h = 600)) + edits.flatMapIndexed { i, e ->
+            val small = Scenes.resize(e, 400, 300)
+            listOf(
+                photo("Pictures/Edited/e$i.jpg", e.features(), size = 3_000_000, w = 800, h = 600),
+                photo("Pictures/WhatsApp/e$i.jpg", small.features(), size = 300_000, w = 400, h = 300),
+            )
+        }
+        val g = match(items).single()
+        assertEquals(setOf(0, 1, 3, 5, 7), g.members.filter { it.keeper }.map { it.item }.toSet())
+        assertEquals(setOf(2, 4, 6, 8), g.members.filter { it.suggestTrash }.map { it.item }.toSet())
+        assertEquals(5, g.members.map { it.version }.toSet().size)
     }
 
     @Test fun comparingCanBeStoppedAndTellsHowFarItIs() {
@@ -296,11 +398,23 @@ class MatcherTest {
         val byName = g.members.associateBy { items[it.item].path.substringAfterLast('/') }
         assertEquals("rotated", byName["turned.jpg"]!!.how)
         assertTrue(byName["turned.jpg"]!!.suggestTrash)
+        assertEquals(0, byName["turned.jpg"]!!.version)
+        // mirrored and cropped copies may be deliberate edits: versions of their own, kept as well
         assertEquals("mirrored", byName["mirrored.jpg"]!!.how)
+        assertTrue(byName["mirrored.jpg"]!!.keeper)
         assertFalse(byName["mirrored.jpg"]!!.suggestTrash)
         assertEquals("cropped", byName["cropped.jpg"]!!.how)
+        assertTrue(byName["cropped.jpg"]!!.keeper)
         assertFalse(byName["cropped.jpg"]!!.suggestTrash)
         assertNotNull(byName["cropped.jpg"]!!.note)
+        assertEquals(3, g.members.map { it.version }.toSet().size)
+        // a second copy of the cropped version is a duplicate of the cropped version
+        val more = items + photo("Pictures/WhatsApp/cropped.jpg", feat(crop, fine = cropFine), size = 200_000, w = 1500, h = 1500)
+        val g2 = match(more).single()
+        val copy = g2.members.first { it.item == 4 }
+        assertTrue(copy.suggestTrash)
+        assertEquals(g2.members.first { it.item == 3 }.version, copy.version)
+        assertTrue(g2.members.first { it.item == 3 }.keeper)
     }
 
     @Test fun aFileLinkedOnlyThroughAnotherIsNotPreselected() {

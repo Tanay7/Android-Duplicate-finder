@@ -47,7 +47,15 @@ object Words {
 
     fun label(m: Member, g: Group): String {
         val base = when (m.relation) {
-            Relation.KEEP -> if (g.type == GroupType.BURST) "Sharpest · keep" else "Best copy · keep"
+            Relation.KEEP -> when {
+                // The best copy of another version of the picture: kept as well.
+                m.version > 0 && m.how == "mirrored" -> "Mirrored · keep"
+                m.version > 0 && m.how == "cropped" -> "Cropped · keep"
+                m.version > 0 && m.edited -> "Edited · keep"
+                m.version > 0 && !m.frame -> "Other version · keep"
+                g.type == GroupType.BURST -> "Sharpest · keep"
+                else -> "Best copy · keep"
+            }
             Relation.IDENTICAL -> "Identical copy"
             Relation.LOOKALIKE -> {
                 val pct = "${(m.score ?: 0f).toInt()}%"
@@ -73,17 +81,22 @@ object Words {
 
     /** Why a member is (or isn't) suggested for the trash, for the viewer. */
     fun reason(r: ScanResult, m: Member, g: Group): String = when {
+        m.keeper && m.note != null -> m.note
         m.keeper && g.type == GroupType.BURST -> "The sharpest shot of the burst: suggested to keep."
         m.keeper -> "The best copy (largest, sharpest, an original rather than a saved copy): suggested to keep."
         m.note != null -> m.note
         m.relation == Relation.VIA -> "Matched only through another file of the group, so it isn't ticked for you." +
             (m.via?.let { " It looks like ${r.items[it].name}." } ?: "")
         m.relation == Relation.POOR -> "Possibly a poor shot. It isn't ticked for you: decide for yourself."
-        m.relation == Relation.IDENTICAL -> "Byte-for-byte the same file as the one kept."
-        m.relation == Relation.BURST -> "Another shot of the same moment, no sharper than the one kept."
-        m.relation == Relation.LOOKALIKE -> "The same picture as the one kept, at a smaller size or saved again."
+        m.relation == Relation.IDENTICAL -> "Byte-for-byte the same file as ${kept(r, m, g, "copy")}."
+        m.relation == Relation.BURST -> "Another shot of the same moment, no sharper than ${kept(r, m, g, "shot")}."
+        m.relation == Relation.LOOKALIKE -> "The same picture as ${kept(r, m, g, "copy")}, at a smaller size or saved again."
         else -> ""
     }
+
+    /** The file a member was compared with, by name: the one to keep of its version of the picture. */
+    private fun kept(r: ScanResult, m: Member, g: Group, what: String): String =
+        "the $what to keep" + (g.members.firstOrNull { it.keeper && it.version == m.version }?.let { " (${r.items[it.item].name})" } ?: "")
 }
 
 /** Thumbnail tiles: a picture with a keep badge and a tick for the trash, and three lines below. */
@@ -409,11 +422,11 @@ class ResultsScreen(act: MainActivity, private val r: ScanResult) : Screen(act) 
                 return@run
             }
             // Every copy of something ticked: say so before it all goes.
-            val whole = r.groups.filter { g -> g.type != GroupType.POOR && r.shown(g) && r.live(g).all { it.item in r.selected } }
+            val whole = r.groups.filter { g -> g.type != GroupType.POOR && r.shown(g) && r.everyCopyTicked(g) }
             if (whole.isNotEmpty()) {
                 AlertDialog.Builder(ctx)
                     .setTitle("Every copy is ticked")
-                    .setMessage("In ${Fmt.plural(whole.size, "group", "groups")}, every copy is ticked, so none would be left outside the trash. Move them anyway?")
+                    .setMessage("In ${Fmt.plural(whole.size, "group", "groups")}, every copy of a picture is ticked, the one to keep too, so none would be left outside the trash. Move them anyway?")
                     .setPositiveButton("Move anyway") { _, _ -> trash(left) }
                     .setNegativeButton("Cancel", null)
                     .setOnDismissListener { refresh() }

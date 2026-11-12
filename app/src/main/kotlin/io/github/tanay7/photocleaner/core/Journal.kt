@@ -19,6 +19,7 @@ import java.nio.channels.FileChannel
  */
 class Journal private constructor(private val raf: RandomAccessFile) : Closeable {
     private val channel: FileChannel = raf.channel
+    private var closed = false
 
     /** Notes that the thread of [slot] starts reading [key], on its own ([alone]) or alongside others. */
     fun begin(slot: Int, key: String, alone: Boolean) {
@@ -33,7 +34,10 @@ class Journal private constructor(private val raf: RandomAccessFile) : Closeable
     /** Notes that the thread of [slot] has finished its file. */
     fun end(slot: Int) = write(ByteBuffer.wrap(byteArrayOf(EMPTY)), slot)
 
-    private fun write(buf: ByteBuffer, slot: Int) {
+    @Synchronized private fun write(buf: ByteBuffer, slot: Int) {
+        // A reading thread can still be at work when the scan has ended: it must not leave a note
+        // in a journal that was emptied, to be taken for a file in flight by the next scan.
+        if (closed) return
         try {
             var at = slot.toLong() * SLOT
             while (buf.hasRemaining()) at += channel.write(buf, at)
@@ -42,9 +46,15 @@ class Journal private constructor(private val raf: RandomAccessFile) : Closeable
         }
     }
 
-    override fun close() {
+    /** The run ended in order: nothing is in flight. */
+    @Synchronized override fun close() {
+        if (closed) return
+        closed = true
         try {
             raf.setLength(0)
+        } catch (_: Exception) {
+        }
+        try {
             raf.close()
         } catch (_: Exception) {
         }
