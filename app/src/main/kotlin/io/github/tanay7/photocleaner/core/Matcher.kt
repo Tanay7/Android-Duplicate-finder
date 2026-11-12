@@ -431,7 +431,7 @@ class Matcher(private val items: List<Item>, private val o: MatchOptions = Match
             if (relation != Relation.IDENTICAL && relation != Relation.VIA && r.raw != items[k].raw) {
                 suggest = false
                 note = "RAW and non-RAW versions of the same photo, so it isn't pre-selected"
-            } else if (relation == Relation.LOOKALIKE && suggest && !sizeTells(r, items[k])) {
+            } else if (relation == Relation.LOOKALIKE && suggest && !betterCopy(items[k], r)) {
                 suggest = false
                 note = "$OTHER_FORMAT, so it isn't pre-selected"
             }
@@ -528,20 +528,35 @@ class Matcher(private val items: List<Item>, private val o: MatchOptions = Match
      */
     private fun sizeTells(a: Item, b: Item) = a.format == b.format || a.pixels != b.pixels || a.original != b.original
 
+    /**
+     * True when the kept copy is known to be no worse than [other]: between two formats at the same
+     * size only if the kept one is from where originals are made and the other isn't. (A favourite
+     * can be the kept copy without being that one.)
+     */
+    private fun betterCopy(kept: Item, other: Item) =
+        kept.format == other.format || kept.pixels != other.pixels || (kept.original && !other.original)
+
+    /**
+     * The copy to keep. A favourite comes before the others only among copies that are as good: a
+     * starred frame of a burst is the frame you chose, a starred file among the largest pictures the
+     * one you like. A starred small copy is simply never ticked: it must not send the full-size
+     * photo to the trash.
+     */
     private fun chooseKeeper(fids: List<Int>): Int {
         var pool = fids
-        val favs = pool.filter { items[it].favorite }
-        if (favs.isNotEmpty()) pool = favs
         if (items[pool[0]].kind == MediaKind.PHOTO) {
             val frames = pool.filter { it in burstChain }
             if (frames.isNotEmpty()) {
                 // Only burst frames compete on sharpness; a smaller export or copy of a frame must
                 // never outrank the full-size originals.
-                return frames.minWith(compareBy({ -quality(it) }, { -items[it].pixels }, { items[it].path }))
+                val chosen = frames.filter { items[it].favorite }.ifEmpty { frames }
+                return chosen.minWith(compareBy({ -quality(it) }, { -items[it].pixels }, { items[it].path }))
             }
             // The largest picture. Among files of one kind, the largest file; among files of several
             // kinds with as many pixels, the one from where originals are made comes first.
             val most = pool.maxOf { items[it].pixels }
+            val starred = pool.filter { items[it].favorite && items[it].pixels == most }
+            if (starred.isNotEmpty()) pool = starred
             val mixed = pool.filter { items[it].pixels == most }.distinctBy { items[it].format }.size > 1
             return pool.minWith(
                 compareBy<Int>({ -items[it].pixels }, { mixed && !items[it].original }, { -items[it].size },
@@ -549,6 +564,9 @@ class Matcher(private val items: List<Item>, private val o: MatchOptions = Match
                     { items[it].added }, { items[it].path }),
             )
         }
+        // Videos are only ever identical copies: the starred one is as good as any.
+        val starred = pool.filter { items[it].favorite }
+        if (starred.isNotEmpty()) pool = starred
         return pool.minWith(
             compareBy<Int>({ CopyNames.hasCopyMarker(items[it].path) }, { !items[it].original }, { items[it].added }, { items[it].path }),
         )

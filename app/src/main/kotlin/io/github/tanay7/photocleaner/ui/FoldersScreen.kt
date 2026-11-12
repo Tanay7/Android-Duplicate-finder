@@ -565,7 +565,7 @@ class FoldersScreen(act: MainActivity) : Screen(act) {
             setTextColor(c.onSurfaceVariant)
             textSize = 14f
             text = """
-                Photo Cleaner finds identical copies, look-alike photos (resized, re-saved, turned or cropped), burst shots, and blurry or dark photos in the folders you choose. For each group it suggests the copy to keep: the largest and sharpest, an original from the camera over one saved from a chat, and always your favourites.
+                Photo Cleaner finds identical copies, look-alike photos (resized, re-saved, turned or cropped), burst shots, and blurry or dark photos in the folders you choose. For each group it suggests the copy to keep: the largest and sharpest, an original from the camera over one saved from a chat. A favourite is never ticked, and among copies as large it is the one kept.
 
                 It only ticks what it is sure of. An edit (other brightness or colours, a sticker or caption added, something removed), a crop, another shot of the same scene and a RAW file's JPEG twin are versions of their own: the best copy of each is kept, and only its own duplicates are ticked. A favourite, or a picture that merely has the same layout (two pages of text, two screens of an app), is never ticked for you, and what you untick stays unticked in later scans.
 

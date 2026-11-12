@@ -95,6 +95,52 @@ class MatcherTest {
         assertTrue(Flag.FAVORITE in m.flags)
     }
 
+    @Test fun aStarredSmallCopyNeverSendsTheFullSizePhotoToTheTrash() {
+        val h = far()
+        val items = listOf(
+            photo("DCIM/Camera/a.jpg", feat(h), size = 4_000_000),
+            photo("Pictures/WhatsApp/a.jpg", feat(h), size = 300_000, w = 1600, h = 1200, favorite = true),
+            photo("Download/a.jpg", feat(h), size = 200_000, w = 1280, h = 960),
+        )
+        val g = match(items).single()
+        assertEquals(0, g.keeper)                                       // the full-size photo, not the starred copy
+        val starred = g.members.first { it.item == 1 }
+        assertFalse(starred.suggestTrash)
+        assertTrue(starred.note!!.contains("favourite"))
+        assertTrue(g.members.first { it.item == 2 }.suggestTrash)       // the other small copy goes as usual
+        // among pictures as large, the starred one is the one to keep
+        val twins = listOf(
+            photo("DCIM/Camera/a.jpg", feat(h), size = 4_000_000),
+            photo("Pictures/a_export.jpg", feat(h), size = 3_000_000, favorite = true),
+        )
+        val t = match(twins).single()
+        assertEquals(1, t.keeper)
+        assertTrue(t.members.first { it.item == 0 }.suggestTrash)
+        // ... but not across formats: the HEIC from the camera isn't ticked because its JPEG twin has a star
+        val formats = listOf(
+            photo("DCIM/Camera/a.heic", feat(h), size = 2_000_000),
+            photo("Pictures/a.jpg", feat(h), size = 4_000_000, favorite = true),
+        )
+        assertTrue(match(formats).single().members.none { it.suggestTrash })
+    }
+
+    @Test fun aStarInABurstChoosesAmongTheFramesOnly() {
+        val h = far()
+        val detail = listOf(120f, 100f, 90f)
+        fun burst(star: Int?, exportStarred: Boolean) = (0 until 3).map {
+            photo("DCIM/Camera/B_$it.jpg", feat(h, detail = detail[it]), taken = 100.0 + it, camera = "Pixel 9", favorite = it == star)
+        } + photo("Pictures/WhatsApp/B_1.jpg", feat(h, detail = 500f), size = 200_000, w = 1600, h = 1200, favorite = exportStarred)
+        // no star: the sharpest frame
+        assertEquals(0, match(burst(null, false)).single().keeper)
+        // a starred frame is the frame you chose, sharpest or not
+        assertEquals(2, match(burst(2, false)).single().keeper)
+        // a starred export of a frame is kept, and changes nothing about the frames
+        val g = match(burst(null, true)).single()
+        assertEquals(0, g.keeper)
+        assertFalse(g.members.first { it.item == 3 }.suggestTrash)
+        assertEquals(setOf(1, 2), g.members.filter { it.suggestTrash }.map { it.item }.toSet())
+    }
+
     @Test fun smallerLookAlikeGoesTheBiggerStays() {
         val h = far()
         val items = listOf(
