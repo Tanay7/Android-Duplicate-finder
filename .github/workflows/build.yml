@@ -99,8 +99,8 @@ jobs:
           emulator-boot-timeout: 1500
           emulator-options: -no-window -no-snapshot -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: bash scripts/device-test.sh apk/app-release.apk testdata apk/app-debug.apk
-      - name: Publish screenshots to docs/screenshots (Android 16 run)
-        if: always() && matrix.api == 36
+      - name: Publish screenshots to docs/screenshots (Android 16 run, when every check passed)
+        if: success() && matrix.api == 36
         run: |
           ls screen-*.png >/dev/null 2>&1 || exit 0
           args=(); for f in screen-*.png; do args+=("$f" "docs/screenshots/${f#screen-}"); done
