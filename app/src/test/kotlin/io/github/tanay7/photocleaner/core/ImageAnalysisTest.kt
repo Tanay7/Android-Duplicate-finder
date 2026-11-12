@@ -284,6 +284,28 @@ class ImageAnalysisTest {
         assertTrue(ImageAnalysis.differsInPart(g, ByteArray(5)))
     }
 
+    @Test fun smallPicturesAreAllowedMoreInEachCell() {
+        assertEquals(1.0, ImageAnalysis.cellSlack(4000), 0.0)
+        assertEquals(1.0, ImageAnalysis.cellSlack(400), 0.0)
+        assertEquals(1.0, ImageAnalysis.cellSlack(0), 0.0)          // size unknown: no allowance
+        assertEquals(4.0, ImageAnalysis.cellSlack(200), 1e-9)
+        assertEquals(6.25, ImageAnalysis.cellSlack(160), 1e-9)
+        assertEquals(8.0, ImageAnalysis.cellSlack(96), 0.0)
+        assertEquals(8.0, ImageAnalysis.cellSlack(1), 0.0)
+        // a cell 8 levels off in colour: a difference between large pictures, not for a 160 px copy
+        val a = ByteArray(ImageAnalysis.GRID_BYTES) { 100 }
+        val b = a.copyOf().also { it[2 * 256 + 40] = 108 }
+        assertTrue(ImageAnalysis.differsInPart(a, b))
+        assertFalse(ImageAnalysis.differsInPart(a, b, slack = ImageAnalysis.cellSlack(160)))
+        // ... and a sticker on a small copy still is one
+        val base = Scenes.scene(71, 800, 600)
+        val small = Scenes.resize(base, 200, 150)
+        val sticker = Scenes.sticker(small, 100, 60, 12, 12, Scenes.argb(255, 0, 200))
+        val slack = ImageAnalysis.cellSlack(200)
+        assertFalse(ImageAnalysis.differsInPart(base.features().grid!!, small.features().grid!!, slack = slack))
+        assertTrue(ImageAnalysis.differsInPart(base.features().grid!!, sticker.features().grid!!, slack = slack))
+    }
+
     @Test fun bitsAreOrderedFromTheFirstValue() {
         val block = DoubleArray(64) { if (it == 0) 100.0 else it.toDouble() / 1000 }
         val h = ImageAnalysis.bits64(block)

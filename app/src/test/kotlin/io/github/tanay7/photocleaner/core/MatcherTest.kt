@@ -479,6 +479,22 @@ class MatcherTest {
         assertTrue(match(same).single().members.first { !it.keeper }.suggestTrash)
     }
 
+    @Test fun aSmallCopyNeedNotAgreeAsExactly() {
+        val h = far()
+        val grid = ByteArray(ImageAnalysis.GRID_BYTES) { 100 }
+        val off = grid.copyOf().also { it[300] = 109 }      // one cell 9 levels off in colour
+        fun copy(w: Int, hgt: Int) = match(
+            listOf(photo("DCIM/Camera/a.jpg", feat(h, grid = grid), size = 4_000_000), photo("Pictures/b.jpg", feat(h, grid = off), size = 50_000, w = w, h = hgt)),
+        ).single().members.first { it.item == 1 }
+        // between large pictures that is a difference: a version of its own
+        assertTrue(copy(1600, 1200).keeper)
+        assertTrue(copy(1600, 1200).partDiffers)
+        assertTrue(copy(400, 300).keeper)
+        // a thumbnail's cells hold few pixels: it is still the same picture
+        assertTrue(copy(160, 120).suggestTrash)
+        assertTrue(copy(120, 160).suggestTrash)
+    }
+
     @Test fun aTurnedCopyIsComparedTurned() {
         val base = Scenes.scene(33, 800, 600)
         val small = Scenes.resize(base, 400, 300)

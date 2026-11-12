@@ -221,7 +221,7 @@ class Matcher(private val items: List<Item>, private val o: MatchOptions = Match
                     }
                     val a = gi ?: return false
                     val b = gridOf(ph[j]) ?: return false
-                    return !ImageAnalysis.differsInPart(a, b, turn)
+                    return !ImageAnalysis.differsInPart(a, b, turn, slack(items[ph[i]], items[ph[j]]))
                 }
                 for (j in i + 1 until n) {
                     val bits = java.lang.Long.bitCount(h xor hashes[j])
@@ -465,8 +465,11 @@ class Matcher(private val items: List<Item>, private val o: MatchOptions = Match
     private fun differsInPart(a: Int, b: Int, turn: Int): Boolean {
         val ga = gridOf(a) ?: return true
         val gb = gridOf(b) ?: return true
-        return ImageAnalysis.differsInPart(ga, gb, turn)
+        return ImageAnalysis.differsInPart(ga, gb, turn, slack(items[a], items[b]))
     }
+
+    /** The smaller of two pictures sets how exactly their cells can agree. */
+    private fun slack(a: Item, b: Item) = ImageAnalysis.cellSlack(min(max(a.width, a.height), max(b.width, b.height)))
 
     private fun gridOf(i: Int): ByteArray? = items[i].features?.grid ?: o.grid?.invoke(i)
 

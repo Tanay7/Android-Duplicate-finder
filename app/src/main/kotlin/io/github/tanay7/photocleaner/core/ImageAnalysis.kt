@@ -127,6 +127,19 @@ object ImageAnalysis {
     const val LOCAL_CHROMA = 5
 
     /**
+     * How much wider those limits are for a small picture, whose cells hold few pixels (and a quarter
+     * as many colour samples), so that the edges of a resized copy fall differently in them. Measured
+     * on copies of 20 photos: with 400 px or more on the long side every cell stays within 1.1 in
+     * brightness and 2.1 in colour; at 240 px within 3 and 4, at 160 px 4 and 10, at 96 px 9 and 19.
+     * None for 400 px and more, then growing with the square of the reduction, to 8 times at most.
+     */
+    fun cellSlack(longSide: Int): Double {
+        if (longSide >= 400 || longSide <= 0) return 1.0
+        val r = 400.0 / longSide
+        return min(8.0, r * r)
+    }
+
+    /**
      * Analyses one reduced photo. [fill] writes `count` rows of unpremultiplied ARGB pixels from row
      * `y0` into the start of the array it gets (what `Bitmap.getPixels` does); transparent pixels are
      * seen over white.
@@ -262,12 +275,13 @@ object ImageAnalysis {
      * True when picture a and picture b differ in part: in some cell of their grids, by more than
      * they differ as a whole (the mean difference, which a slightly brighter re-save has everywhere).
      * [turn] says how b must be turned to lie like a: -1 as it is, 0 a quarter clockwise, 1 half,
-     * 2 a quarter the other way (the order of [ImageFeatures.variants]).
+     * 2 a quarter the other way (the order of [ImageFeatures.variants]). [slack] widens the limits
+     * for small pictures ([cellSlack] of the smaller one's long side).
      *
      * Allocates nothing: it runs for every pair of photos that look the same as a whole, which in a
      * folder of a thousand near-identical frames is half a million pairs.
      */
-    fun differsInPart(a: ByteArray, b: ByteArray, turn: Int = -1): Boolean {
+    fun differsInPart(a: ByteArray, b: ByteArray, turn: Int = -1, slack: Double = 1.0): Boolean {
         if (a.size != GRID_BYTES || b.size != GRID_BYTES) return true
         val n = GRID
         for (ch in 0 until 3) {
@@ -290,7 +304,7 @@ object ImageAnalysis {
                 }
             }
             val mean = sum.toDouble() / (n * n)
-            val limit = if (ch == 0) LOCAL_LUMA else LOCAL_CHROMA
+            val limit = (if (ch == 0) LOCAL_LUMA else LOCAL_CHROMA) * slack
             if (mean - least >= limit || most - mean >= limit) return true
         }
         return false
