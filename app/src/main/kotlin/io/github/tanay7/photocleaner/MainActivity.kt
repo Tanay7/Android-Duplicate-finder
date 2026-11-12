@@ -4,7 +4,6 @@ import android.Manifest
 import android.app.Activity
 import android.app.ActivityOptions
 import android.content.Intent
-import android.content.IntentSender
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.net.Uri
@@ -300,9 +299,11 @@ class MainActivity : Activity() {
             .toBundle()
         try {
             startIntentSenderForResult(pi.intentSender, REQ_TRASH, null, 0, 0, 0, options)
-        } catch (e: IntentSender.SendIntentException) {
+        } catch (e: Exception) {
+            // Whatever keeps the question from being shown (the request was cancelled, or too large
+            // to hand over): nothing was moved, and the app carries on.
             trashDone = null
-            toast("Couldn't ask Android: ${e.message}")
+            toast("Couldn't ask Android: ${e.message ?: e.javaClass.simpleName}")
             done(false)
         }
     }
