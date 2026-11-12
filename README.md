@@ -21,7 +21,7 @@ versions of their own: the best copy of each is kept, and only its own duplicate
 favourite, or a picture that merely has the same layout as another (two pages of text, two screens
 of the same app), is never ticked for you.
 
-Lean: Kotlin on the Android framework, **no libraries**, **no internet permission**, an APK of about 210 KB.
+Lean: Kotlin on the Android framework, **no libraries**, **no internet permission**, an APK of about 225 KB.
 It works fully offline, and nothing leaves the phone. It reads your photos on **every processor
 core** at once, and it is built not to fall over (see [Built to last](#built-to-last)).
 
@@ -75,8 +75,8 @@ The fingerprints, cut-offs and keep rules start from DupeFinder's, the desktop d
 | Group | Found when | Suggested to keep |
 |---|---|---|
 | Identical copies | the files have the same SHA-256 (compared only when they have the same size) | one without a copy name such as "(1)" or " - Copy", then the copy in a camera, screenshots or screen-recordings folder, then the first added |
-| Look-alike photos | their 64-bit perceptual hashes (pHash) differ in at most 8 bits (strict 4, loose 12), also against the other photo turned, mirrored or cropped to its centre, **and** their fine fingerprints (below) differ in at most 48 of 255 bits (strict 16), unless the two clearly differ in colour | the one with the most pixels, then the largest file |
-| Burst shots | photos from the same camera (EXIF make and model), at most 3 seconds apart, whose hashes differ in at most 16 bits and whose fine fingerprints differ in at most 56 | the sharpest (Laplacian detail, halved for a dark or clipped shot) |
+| Look-alike photos | their 64-bit perceptual hashes (pHash) differ in at most 8 bits (strict 4, loose 12), also against the other photo turned, mirrored or cropped to its centre, **and** their fine fingerprints (below) differ in at most 48 of 255 bits (strict 16), unless the two clearly differ in colour | the one with the most pixels, then the largest file of its kind (see *Two formats*) |
+| Burst shots | photos from the same camera (EXIF make and model), at most 3 seconds apart, whose hashes differ in at most 16 bits and whose fine fingerprints differ in at most 56; RAW files and JPEGs each form their own burst | the sharpest (Laplacian detail, halved for a dark or clipped shot) |
 | Blurry or dark photos | a photo from a camera (its EXIF data names the camera or the moment) with sharpness below 45 of 100 (a re-blur measure of the 4 sharpest of 16 tiles), median brightness below 40, or more than 25 % of pixels near black or white | never ticked: decide yourself |
 
 **The fine fingerprint.** A 64-bit pHash only sees a picture's layout. Measured on generated test
@@ -121,8 +121,9 @@ you decide. A smaller copy goes whatever its format.
 **What is ticked for you** is only what is sure:
 
 - identical copies;
-- look-alikes within 8 pHash bits and 32 fine bits of the kept copy of their version ("Loose" finds
-  more, but ticks no more than "Normal");
+- look-alikes within 8 pHash bits and 32 fine bits of the kept copy of their version, alike in
+  brightness and colour as a whole and in every part of the picture ("Loose" finds more, but ticks
+  no more than "Normal");
 - burst shots that look like the kept shot (a different moment of a long burst is left alone).
 
 **Never ticked for you:**
@@ -234,10 +235,10 @@ this key: it is only fit for sideloading your own builds. Use a private key for 
 | File | What it does |
 |---|---|
 | `core/ImageAnalysis.kt` | pHash with its turned, mirrored and centre-crop variants, the fine fingerprint, the grid of local brightness and colour, area resizing, sharpness (re-blur measure, Laplacian tiles, noise estimate, median filter), exposure, brightness and contrast |
-| `core/Matcher.kt` | links identical files, look-alikes and burst frames, forms groups, splits them into versions (edits, crops, RAW twins), picks the copy to keep of each, and decides what to tick |
+| `core/Matcher.kt` | links identical files, look-alikes and burst frames, forms groups, splits them into versions (edits, crops, RAW twins, other formats), picks the copy to keep of each, and decides what to tick |
 | `core/FolderTree.kt` | the folder tree, its tick boxes, and the selection kept between runs |
-| `core/Names.kt` | copy names, original folders, sizes and counts |
-| `core/Parallelism.kt` | how many threads a scan runs, how long a file may take, how many threads rest when the phone is hot, and the memory budget decoders share |
+| `core/Names.kt` | copy names, original folders, kinds of picture file, capture times, sizes and counts |
+| `core/Parallelism.kt` | how many threads a scan runs, the reduction photos are decoded at, how long a file may take, how many threads rest when the phone is hot, and the memory budget decoders share |
 | `core/Journal.kt` | the note of files being read, which finds a photo that makes the app die |
 | `media/MediaIndex.kt` | reads photos, videos and storage volumes from Android's media index |
 | `media/Analyzer.kt` | opens a file once and reads its SHA-256, EXIF capture time and camera, and its pixels reduced to 960-1024 px |
