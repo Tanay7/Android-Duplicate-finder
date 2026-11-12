@@ -189,7 +189,90 @@ class ImageAnalysisTest {
             assertEquals(fresh.detail, reused.detail, 0f)
             assertEquals(fresh.median, reused.median, 0f)
             assertTrue(fresh.variants.contentEquals(reused.variants))
+            assertTrue(fresh.grid!!.contentEquals(reused.grid!!))
         }
+    }
+
+    private fun cell(f: ImageFeatures, plane: Int, row: Int, col: Int) =
+        f.grid!![plane * ImageAnalysis.GRID * ImageAnalysis.GRID + row * ImageAnalysis.GRID + col].toInt() and 0xFF
+
+    @Test fun theGridIsThePicturePlaceByPlace() {
+        // black on the left, white on the right, the line between them on a line between cells
+        val half = Pic(320, 160, IntArray(320 * 160) { if (it % 320 < 160) Scenes.argb(0, 0, 0) else Scenes.argb(255, 255, 255) }).features()
+        assertEquals(ImageAnalysis.GRID_BYTES, half.grid!!.size)
+        for (row in 0 until 16) for (col in 0 until 16) {
+            assertEquals(if (col < 8) 0 else 255, cell(half, 0, row, col))
+            assertEquals(128, cell(half, 1, row, col))
+            assertEquals(128, cell(half, 2, row, col))
+        }
+        // a size the cells don't divide: 100 px wide, black up to x = 53. The cell from 50 to 56.25
+        // holds 3 black pixels and 3.25 white ones.
+        val odd = Pic(100, 50, IntArray(100 * 50) { if (it % 100 < 53) Scenes.argb(0, 0, 0) else Scenes.argb(255, 255, 255) }).features()
+        assertEquals(0, cell(odd, 0, 7, 7))
+        assertEquals(Math.round(255 * 3.25 / 6.25).toInt(), cell(odd, 0, 7, 8))
+        assertEquals(255, cell(odd, 0, 7, 9))
+        // the same split from top to bottom
+        val rows = Pic(50, 100, IntArray(50 * 100) { if (it / 50 < 53) Scenes.argb(0, 0, 0) else Scenes.argb(255, 255, 255) }).features()
+        assertEquals(0, cell(rows, 0, 7, 3))
+        assertEquals(Math.round(255 * 3.25 / 6.25).toInt(), cell(rows, 0, 8, 3))
+        assertEquals(255, cell(rows, 0, 9, 3))
+        // colour: a red square in the top left corner
+        val red = Pic(160, 160, IntArray(160 * 160) { if (it % 160 < 10 && it / 160 < 10) Scenes.argb(255, 0, 0) else Scenes.argb(128, 128, 128) }).features()
+        assertTrue(cell(red, 2, 0, 0) > 230)      // Cr
+        assertTrue(cell(red, 1, 0, 0) < 100)      // Cb
+        assertEquals(128, cell(red, 2, 0, 1))
+        // too small for cells
+        assertEquals(null, Scenes.uniform(90, 15, 40).features().grid)
+        assertEquals(ImageAnalysis.GRID_BYTES, Scenes.uniform(90, 16, 16).features().grid!!.size)
+    }
+
+    @Test fun copiesKeepTheirGridAndEditsOfAPartDoNot() {
+        for (seed in 40 until 52) {
+            val base = Scenes.scene(seed, 800, 600)
+            val g = base.features().grid!!
+            // saved again, resized, noisy, a touch brighter all over
+            for (copy in listOf(
+                Scenes.resize(base, 400, 300), Scenes.resize(base, 640, 480), Scenes.resize(base, 333, 250),
+                Scenes.noise(Scenes.resize(base, 400, 300), 4.0, seed), Scenes.tint(base, 4, 4, 4),
+            )) {
+                assertFalse("seed $seed", ImageAnalysis.differsInPart(g, copy.features().grid!!))
+                assertFalse("seed $seed", ImageAnalysis.differsInPart(copy.features().grid!!, g))
+            }
+            // something put on the picture, or moved in it
+            val rnd = Random(seed)
+            for (edit in listOf(
+                Scenes.sticker(base, rnd.nextInt(700), rnd.nextInt(500), 40, 40, Scenes.argb(255, 0, 200)),
+                Scenes.sticker(base, 0, 540, 800, 60, Scenes.argb(15, 15, 15)),
+                Scenes.sticker(base, 560, 560, 200, 24, Scenes.argb(255, 140, 0)),
+                Scenes.shift(base, 16),
+            )) {
+                assertTrue("seed $seed", ImageAnalysis.differsInPart(g, edit.features().grid!!))
+                assertTrue("seed $seed", ImageAnalysis.differsInPart(g, Scenes.resize(edit, 400, 300).features().grid!!))
+            }
+        }
+    }
+
+    @Test fun gridsOfTurnedCopiesAreComparedTurned() {
+        val base = Scenes.scene(60, 800, 600)
+        val g = base.features().grid!!
+        val quarter = Scenes.rotate90(base)                     // clockwise
+        val half = Scenes.rotate180(base)
+        val threeQuarters = Scenes.rotate90(half)
+        // "turn" says how the second picture must be turned to lie like the first
+        assertFalse(ImageAnalysis.differsInPart(quarter.features().grid!!, g, 0))
+        assertFalse(ImageAnalysis.differsInPart(half.features().grid!!, g, 1))
+        assertFalse(ImageAnalysis.differsInPart(threeQuarters.features().grid!!, g, 2))
+        assertFalse(ImageAnalysis.differsInPart(g, quarter.features().grid!!, 2))
+        assertFalse(ImageAnalysis.differsInPart(g, threeQuarters.features().grid!!, 0))
+        // and not turned, or turned the wrong way, they differ
+        assertTrue(ImageAnalysis.differsInPart(quarter.features().grid!!, g))
+        assertTrue(ImageAnalysis.differsInPart(quarter.features().grid!!, g, 2))
+        assertTrue(ImageAnalysis.differsInPart(half.features().grid!!, g))
+        // the turns are the ones of the hashes
+        assertEquals(base.features().variants[0], quarter.features().phash)
+        assertEquals(base.features().variants[2], threeQuarters.features().phash)
+        // rubbish is no grid
+        assertTrue(ImageAnalysis.differsInPart(g, ByteArray(5)))
     }
 
     @Test fun bitsAreOrderedFromTheFirstValue() {

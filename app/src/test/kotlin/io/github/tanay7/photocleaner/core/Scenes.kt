@@ -212,6 +212,13 @@ object Scenes {
         argb(comp(c, 0) + dr, comp(c, 1) + dg, comp(c, 2) + db)
     })
 
+    /** A square of one colour put on the picture: a sticker, or with a wide flat one a caption bar. */
+    fun sticker(p: Pic, x0: Int, y0: Int, sw: Int, sh: Int, colour: Int): Pic {
+        val out = p.px.copyOf()
+        rect(out, p.w, p.h, x0, y0, x0 + sw, y0 + sh, colour)
+        return Pic(p.w, p.h, out)
+    }
+
     private fun rgb(rnd: Random, colour: Boolean): Int {
         if (!colour) {
             val v = 30 + rnd.nextInt(200)

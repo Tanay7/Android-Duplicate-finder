@@ -55,7 +55,7 @@ class FeatureCache(private val ctx: Context) : SQLiteOpenHelper(ctx, NAME, null,
                 v3 INTEGER, crop INTEGER, f0 INTEGER, f1 INTEGER, f2 INTEGER, f3 INTEGER, c0 INTEGER,
                 c1 INTEGER, c2 INTEGER, c3 INTEGER, flat INTEGER, cb REAL, cr REAL, sat REAL, mean REAL,
                 contrast REAL, sharp REAL, detail REAL, med REAL, black REAL, white REAL, error TEXT,
-                orig INTEGER)""",
+                orig INTEGER, grid BLOB)""",
         )
     }
 
@@ -77,7 +77,8 @@ class FeatureCache(private val ctx: Context) : SQLiteOpenHelper(ctx, NAME, null,
 
     private fun read(): HashMap<String, FeatureRow> {
         val out = HashMap<String, FeatureRow>()
-        readableDatabase.rawQuery("SELECT * FROM features", null).use { c ->
+        // Everything but the grids: those are read one by one, for the few photos that need them.
+        readableDatabase.rawQuery("SELECT $COLUMNS FROM features", null).use { c ->
             val idx = (0 until c.columnCount).associateBy { c.getColumnName(it) }
             fun i(n: String) = idx.getValue(n)
             fun dbl(n: String): Double? = if (c.isNull(i(n))) null else c.getDouble(i(n))
@@ -124,13 +125,29 @@ class FeatureCache(private val ctx: Context) : SQLiteOpenHelper(ctx, NAME, null,
         return out
     }
 
-    fun save(rows: Collection<FeatureRow>) {
-        if (rows.isEmpty()) return
-        try {
+    /** Keeps [rows]; false if they couldn't be written (they are then only known for this scan). */
+    fun save(rows: Collection<FeatureRow>): Boolean {
+        if (rows.isEmpty()) return true
+        return try {
             write(rows)
+            true
         } catch (e: Exception) {
             Log.w(TAG, "Fingerprints not kept (${rows.size})", e)
+            false
         }
+    }
+
+    /**
+     * The grid ([ImageFeatures.grid]) saved for the file of [key], or null. May be called from
+     * several threads at once.
+     */
+    fun grid(key: String): ByteArray? = try {
+        readableDatabase.rawQuery("SELECT grid FROM features WHERE key = ?", arrayOf(key)).use { c ->
+            if (c.moveToFirst() && !c.isNull(0)) c.getBlob(0) else null
+        }
+    } catch (e: Exception) {
+        Log.w(TAG, "Couldn't read a grid", e)
+        null
     }
 
     private fun write(rows: Collection<FeatureRow>) {
@@ -173,6 +190,7 @@ class FeatureCache(private val ctx: Context) : SQLiteOpenHelper(ctx, NAME, null,
                     v.put("med", f.median)
                     v.put("black", f.black)
                     v.put("white", f.white)
+                    v.put("grid", f.grid)
                 }
                 db.insertWithOnConflict("features", null, v, SQLiteDatabase.CONFLICT_REPLACE)
             }
@@ -216,10 +234,13 @@ class FeatureCache(private val ctx: Context) : SQLiteOpenHelper(ctx, NAME, null,
     companion object {
         /**
          * Raising this recomputes every cached fingerprint (the database version). 3: photos are
-         * decoded at a power-of-two reduction, and capture times are the camera's own clock.
+         * decoded at a power-of-two reduction, capture times are the camera's own clock, and every
+         * photo has a grid that tells an edit of part of it from a re-save.
          */
         const val ALGO = 3
         private const val NAME = "features.db"
+        private const val COLUMNS = "key, size, modified, sha, w, h, taken, camera, analysed, phash, v0, v1, v2, v3, crop, " +
+            "f0, f1, f2, f3, c0, c1, c2, c3, flat, cb, cr, sat, mean, contrast, sharp, detail, med, black, white, error, orig"
         private const val TAG = "PhotoCleaner"
     }
 }

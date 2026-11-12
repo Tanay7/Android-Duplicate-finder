@@ -163,6 +163,7 @@ class Scanner(
                 MatchOptions(
                     similar = o.similar, bursts = o.bursts, poor = o.poor, maxBits = o.maxBits, threads = cores,
                     cancelled = { cancel.get() },
+                    grid = ::gridOf,
                     progress = { done, total ->
                         val now = SystemClock.elapsedRealtime()
                         if (now - lastTold > 200 || done == total) {
@@ -184,6 +185,27 @@ class Scanner(
             journal?.close()
             cache.close()
         }
+    }
+
+    /**
+     * Keeps [rows] in the cache. Once they are there, their grids (the largest part of what is known
+     * about a photo) leave the memory: [gridOf] reads them back for the few photos that need them.
+     */
+    private fun keep(rows: List<FeatureRow>) {
+        if (cache.save(rows)) for (r in rows) r.features?.grid = null
+    }
+
+    private val gridsRead = object : LinkedHashMap<Int, ByteArray>(256, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Int, ByteArray>?) = size > 4096
+    }
+
+    /** The grid of item [i]: still in memory, or read back from the cache. Called from the comparing threads. */
+    private fun gridOf(i: Int): ByteArray? {
+        rows[i]?.features?.grid?.let { return it }
+        synchronized(gridsRead) { gridsRead[i] }?.let { return it }
+        val g = cache.grid(items[i].key) ?: return null
+        synchronized(gridsRead) { gridsRead[i] = g }
+        return g
     }
 
     /** Half of what the system can still give, for decoders to share; at least enough for one ordinary photo each. */
@@ -392,7 +414,7 @@ class Scanner(
                         if (alone) {
                             // Kept at once: if a later file of this pass stops the app, these aren't read again.
                             cleared.add(items[i].key)
-                            cache.save(pending)
+                            keep(pending)
                             pending.clear()
                         }
                     }
@@ -436,7 +458,7 @@ class Scanner(
                 // A thread held by a dead file doesn't count: another one works in its place.
                 allowed.set(Parallelism.allowed(threads, heat) + stuck)
                 if (pending.size >= 200 || (pending.isNotEmpty() && now - lastSave > 3000)) {
-                    cache.save(pending)
+                    keep(pending)
                     pending.clear()
                     lastSave = now
                 }
@@ -449,7 +471,7 @@ class Scanner(
         } finally {
             stop.set(true)
             // Kept even when the scan is stopped: the next one starts from here.
-            cache.save(pending)
+            keep(pending)
             if (cleared.isNotEmpty()) {
                 suspects = suspects - cleared
                 Prefs.setSuspects(ctx, suspects)

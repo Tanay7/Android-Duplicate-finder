@@ -28,7 +28,8 @@ class MatcherTest {
         cropFine: LongArray = LongArray(4),
         mean: Float = 120f,
         contrast: Float = 50f,
-    ) = ImageFeatures(phash, variants, crop, fine, cropFine, flat, cb, cr, sat, mean, contrast, sharp, detail, median, 0f, 0f)
+        grid: ByteArray? = ByteArray(ImageAnalysis.GRID_BYTES),
+    ) = ImageFeatures(phash, variants, crop, fine, cropFine, flat, cb, cr, sat, mean, contrast, sharp, detail, median, 0f, 0f, grid)
 
     /** Fine bits that differ from all-zero in [bits] places (never the first, the unused one). */
     private fun fineBits(bits: Int) = LongArray(4).also { for (b in 1..bits) it[b ushr 6] = it[b ushr 6] or (1L shl (b and 63)) }
@@ -361,6 +362,99 @@ class MatcherTest {
         assertEquals(setOf(0, 1, 3, 5, 7), g.members.filter { it.keeper }.map { it.item }.toSet())
         assertEquals(setOf(2, 4, 6, 8), g.members.filter { it.suggestTrash }.map { it.item }.toSet())
         assertEquals(5, g.members.map { it.version }.toSet().size)
+    }
+
+    @Test fun anEditOfPartOfThePictureIsAVersionOfItsOwn() {
+        val base = Scenes.scene(21, 800, 600)
+        val yellow = Scenes.argb(255, 220, 40)
+        // a sticker 5 % of the width, a caption bar, and the same scene shot again a little to the side
+        val edits = listOf(
+            Scenes.sticker(base, 500, 200, 40, 40, yellow),
+            Scenes.sticker(base, 0, 560, 800, 40, Scenes.argb(20, 20, 20)),
+            Scenes.shift(base, 12),
+        )
+        for (edit in edits) {
+            val small = Scenes.resize(edit, 400, 300)
+            val items = listOf(
+                photo("DCIM/Camera/a.jpg", base.features(), size = 4_000_000, w = 800, h = 600),
+                photo("Pictures/WhatsApp/a.jpg", Scenes.resize(base, 400, 300).features(), size = 300_000, w = 400, h = 300),
+                photo("Pictures/Edited/a_edit.jpg", edit.features(), size = 3_000_000, w = 800, h = 600),
+                photo("Pictures/WhatsApp/a_edit.jpg", small.features(), size = 250_000, w = 400, h = 300),
+            )
+            val groups = match(items)
+            if (groups.size == 2) {
+                // too different to be shown together at all: each with its own copy
+                assertEquals(listOf(setOf(0, 1), setOf(2, 3)), groups.map { g -> g.members.map { it.item }.toSet() }.sortedBy { it.min() })
+                assertTrue(groups.all { g -> g.members.count { it.suggestTrash } == 1 })
+                continue
+            }
+            val g = groups.single()
+            assertEquals(setOf(0, 2), g.members.filter { it.keeper }.map { it.item }.toSet())
+            assertEquals(setOf(1, 3), g.members.filter { it.suggestTrash }.map { it.item }.toSet())
+            val kept = g.members.first { it.item == 2 }
+            assertEquals(1, kept.version)
+            assertTrue(kept.note, kept.note!!.contains("Part of the picture") || kept.note!!.contains("brightness") || kept.note!!.contains("details"))
+        }
+        // the sticker is what tells them apart: without the grids, the copy with the sticker was a plain duplicate
+        val sticker = Scenes.sticker(base, 500, 200, 40, 40, yellow)
+        val pair = listOf(
+            photo("DCIM/Camera/a.jpg", base.features(), size = 4_000_000, w = 800, h = 600),
+            photo("Pictures/a_sticker.jpg", sticker.features(), size = 3_000_000, w = 800, h = 600),
+        )
+        val m = match(pair).single().members.first { it.item == 1 }
+        assertTrue(m.keeper)
+        assertFalse(m.edited)
+        assertTrue(m.note!!.contains("Part of the picture"))
+    }
+
+    @Test fun withoutItsGridAPhotoIsNeverTakenForAPlainCopy() {
+        val h = far()
+        val items = listOf(
+            photo("DCIM/Camera/a.jpg", feat(h, grid = null), size = 4_000_000),
+            photo("Pictures/b.jpg", feat(h, grid = null), size = 3_000_000),
+        )
+        // the grids can't be had (the cache lost them): shown, not ticked
+        assertTrue(match(items).single().members.none { it.suggestTrash })
+        assertTrue(match(items, MatchOptions(poor = false, grid = { null })).single().members.none { it.suggestTrash })
+        // read back from the cache when they are no longer in memory
+        var asked = 0
+        val g = match(items, MatchOptions(poor = false, grid = { asked++; ByteArray(ImageAnalysis.GRID_BYTES) })).single()
+        assertTrue(g.members.first { it.item == 1 }.suggestTrash)
+        assertTrue(asked > 0)
+        // identical files need no grid
+        val same = items.map { photo(it.path, it.features, sha = "s") }
+        assertTrue(match(same).single().members.first { !it.keeper }.suggestTrash)
+    }
+
+    @Test fun aTurnedCopyIsComparedTurned() {
+        val base = Scenes.scene(33, 800, 600)
+        val small = Scenes.resize(base, 400, 300)
+        for (turned in listOf(Scenes.rotate90(small), Scenes.rotate180(small), Scenes.rotate90(Scenes.rotate180(small)))) {
+            val items = listOf(
+                photo("DCIM/Camera/a.jpg", base.features(), size = 4_000_000, w = 800, h = 600),
+                photo("Pictures/turned.jpg", turned.features(), size = 300_000, w = turned.w, h = turned.h),
+            )
+            val m = match(items).single().members.first { it.item == 1 }
+            assertEquals("rotated", m.how)
+            assertTrue(m.suggestTrash)
+            // and the other way round: the turned one is the larger
+            val back = listOf(
+                photo("DCIM/Camera/a.jpg", Scenes.rotate90(base).features(), size = 4_000_000, w = 600, h = 800),
+                photo("Pictures/b.jpg", turned.features(), size = 300_000, w = turned.w, h = turned.h),
+            )
+            assertTrue(match(back).single().members.first { it.item == 1 }.suggestTrash)
+        }
+        // a turned copy with a small sticker on it (2.5 % of the width: the fingerprints of the whole
+        // picture hardly notice it) is no plain copy
+        val sticker = Scenes.rotate90(Scenes.sticker(small, 250, 100, 10, 10, Scenes.argb(255, 220, 40)))
+        val items = listOf(
+            photo("DCIM/Camera/a.jpg", base.features(), size = 4_000_000, w = 800, h = 600),
+            photo("Pictures/turned.jpg", sticker.features(), size = 300_000, w = sticker.w, h = sticker.h),
+        )
+        val m = match(items).single().members.first { it.item == 1 }
+        assertTrue(m.keeper)
+        assertEquals("rotated", m.how)
+        assertTrue(m.note!!.contains("Part of the picture"))
     }
 
     @Test fun comparingCanBeStoppedAndTellsHowFarItIs() {

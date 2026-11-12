@@ -567,7 +567,9 @@ class FoldersScreen(act: MainActivity) : Screen(act) {
             text = """
                 Photo Cleaner finds identical copies, look-alike photos (resized, re-saved, turned or cropped), burst shots, and blurry or dark photos in the folders you choose. For each group it suggests the copy to keep: the largest and sharpest, an original from the camera over one saved from a chat, and always your favourites.
 
-                It only ticks what it is sure of. An edit, a crop and a RAW file's JPEG twin are versions of their own: the best copy of each is kept, and only its own duplicates are ticked. A favourite, or a picture that merely has the same layout (two pages of text, two screens of an app), is never ticked for you, and what you untick stays unticked in later scans.
+                It only ticks what it is sure of. An edit (other brightness or colours, a sticker or caption added, something removed), a crop, another shot of the same scene and a RAW file's JPEG twin are versions of their own: the best copy of each is kept, and only its own duplicates are ticked. A favourite, or a picture that merely has the same layout (two pages of text, two screens of an app), is never ticked for you, and what you untick stays unticked in later scans.
+
+                It can't see a change that leaves every part of a picture as bright as it was, such as a small area blurred or retouched: look at what is ticked before you move it if you make edits like that.
 
                 Nothing is deleted for good. Files you remove go to the phone's trash and stay there for 30 days: Undo brings them straight back, and so does the trash in the Files or Photos app.
 

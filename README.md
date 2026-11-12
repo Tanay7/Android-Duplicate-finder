@@ -15,10 +15,11 @@ A duplicate photo and video cleaner for **Android 16 and 17** (minSdk 36, target
 For each group it suggests the copy to keep and ticks the others. Ticked files go to Android's
 trash, where they stay for 30 days, and Undo brings them straight back.
 
-It only ticks what it is sure of. An edit, a crop and a RAW file's JPEG twin are versions of their
-own: the best copy of each is kept, and only its own duplicates are ticked. A favourite, or a
-picture that merely has the same layout as another (two pages of text, two screens of the same
-app), is never ticked for you.
+It only ticks what it is sure of. An edit (other brightness or colours, a sticker or a caption
+added, something removed), a crop, another shot of the same scene and a RAW file's JPEG twin are
+versions of their own: the best copy of each is kept, and only its own duplicates are ticked. A
+favourite, or a picture that merely has the same layout as another (two pages of text, two screens
+of the same app), is never ticked for you.
 
 Lean: Kotlin on the Android framework, **no libraries**, **no internet permission**, an APK of about 210 KB.
 It works fully offline, and nothing leaves the phone. It reads your photos on **every processor
@@ -87,11 +88,28 @@ different pages and screens that share their layout in over 55.
 
 **Versions.** Within a group, files that are surely the same picture, unedited, form a version. A
 mirrored or cropped copy, one whose brightness, contrast or colours differ by more than saving or
-resizing changes them (a filter, black and white, a brighter version) and a RAW file's JPEG twin are
-versions of their own: someone made them on purpose. The best copy of every version is kept, and
-every other file is compared with the kept copy of its own version. So an edit's duplicates go while
-the edit stays, and the original's duplicates go even when the edit is the larger file. A camera
-that saves every shot as a RAW file and a JPEG gives two bursts, and the sharpest of each is kept.
+resizing changes them (a filter, black and white, a brighter version), one that differs in part of
+the picture, and a RAW file's JPEG twin are versions of their own: someone made them on purpose.
+The best copy of every version is kept, and every other file is compared with the kept copy of its
+own version. So an edit's duplicates go while the edit stays, and the original's duplicates go even
+when the edit is the larger file. A camera that saves every shot as a RAW file and a JPEG gives two
+bursts, and the sharpest of each is kept.
+
+**Part of the picture.** The fingerprints above describe a picture as a whole, and a copy with a
+sticker, a date stamp or a drawn circle on it, or with something removed, passes all of them: in a
+test with generated photos, every such copy was taken for a plain duplicate. So the app also keeps
+a grid of 16 x 16 cells for every photo, with the mean brightness and colour of each (768 bytes).
+Saved again or resized (JPEG quality 55 to 95, 800 px to full size, sharpened), a photo keeps every
+cell within 3 levels of brightness and 2 of colour; a sticker 2.5 % of the picture's width, a date
+stamp, a drawn circle or a replaced object moves a cell by 6 or more. Two files are the same picture
+only if no cell differs by 6 in brightness or 5 in colour, beyond what they differ by all over. Two
+shots of one scene taken a moment apart, which no burst links because a chat app removed their
+capture times, are told apart the same way. The grids stay on disk and are read only for the few
+photos about to be taken for copies.
+
+What this can't see: a change that leaves every cell's average as it was, such as a small area
+blurred, pixelated or retouched, or a line a few pixels thin. Such a copy still counts as a
+duplicate, so look at what is ticked before you move it if you make edits like that.
 
 **What is ticked for you** is only what is sure:
 
@@ -199,15 +217,15 @@ this key: it is only fit for sideloading your own builds. Use a private key for 
 
 | What | How |
 |---|---|
-| JVM tests (71): perceptual hashes and fine fingerprints of synthetic photos (resized, saved again, turned, mirrored, cropped, grey), blur, noise, exposure, brightness and contrast measures, the median filter against a naive one, reused per-thread buffers giving the same answers as fresh ones; every grouping and keep rule (identical, look-alike, turned, mirrored, cropped, edited, RAW twins, versions that each keep their best copy, linked through another file, bursts, RAW and JPEG bursts, their copies and far frames, colour, favourites, flat pictures, videos, poor shots, matching on many threads, stopping and progress); 60 different text pages and 40 app screens that a pHash confuses must never be grouped, nor pages photographed one after the other be a burst; the thread count, the power-of-two reduction photos are decoded at, capture times, time limits, heat rules, the decoders' memory budget (also with a decoder that hangs) and the crash journal; what is ticked in the results, what is remembered, and that the last copy of a picture or of a version never stays ticked; the folder tree, tick boxes and how new folders are treated; copy names and sizes | `./gradlew testDebugUnitTest` |
-| On-device test on Android 16 and 17 emulators: copies test photos to the phone (`scripts/make_test_photos.py`), including five document pages photographed 2 s apart and two settings screens that a pHash takes for a burst and for look-alikes, an edited version with a copy of its own, a truncated photo, a text file with a photo's name and an 8000 px panorama; scans three different sets of folders and checks every group found, what is ticked and what is left alone, and the broken files reported; moves the ticked files to the trash through the real button and Android's own dialog, checks the media index, undoes it; has Android close the app while its results are open and checks they come back; with a test build that dies on purpose while reading one photo, checks that the photo is left out by the third scan; rotates, and runs 15,000 random GUI events (monkey); fails on any wrong result, crash or ANR | `scripts/device-test.sh` (CI) |
+| JVM tests (77): perceptual hashes and fine fingerprints of synthetic photos (resized, saved again, turned, mirrored, cropped, grey), blur, noise, exposure, brightness and contrast measures, the median filter against a naive one, reused per-thread buffers giving the same answers as fresh ones; the grid of local brightness and colour (re-saves keep it, a sticker, a caption or a shift doesn't, turned copies are compared turned); every grouping and keep rule (identical, look-alike, turned, mirrored, cropped, edited, edited in part, RAW twins, versions that each keep their best copy, linked through another file, bursts, RAW and JPEG bursts, their copies and far frames, colour, favourites, flat pictures, videos, poor shots, matching on many threads, stopping and progress); 60 different text pages and 40 app screens that a pHash confuses must never be grouped, nor pages photographed one after the other be a burst; the thread count, the power-of-two reduction photos are decoded at, capture times, time limits, heat rules, the decoders' memory budget (also with a decoder that hangs) and the crash journal; what is ticked in the results, what is remembered, and that the last copy of a picture or of a version never stays ticked; the folder tree, tick boxes and how new folders are treated; copy names and sizes | `./gradlew testDebugUnitTest` |
+| On-device test on Android 16 and 17 emulators: copies test photos to the phone (`scripts/make_test_photos.py`), including five document pages photographed 2 s apart and two settings screens that a pHash takes for a burst and for look-alikes, an edited version with a copy of its own, a copy with a sticker on it, a truncated photo, a text file with a photo's name and an 8000 px panorama; scans three different sets of folders and checks every group found, what is ticked and what is left alone, and the broken files reported; moves the ticked files to the trash through the real button and Android's own dialog, checks the media index, undoes it; has Android close the app while its results are open and checks they come back; with a test build that dies on purpose while reading one photo, checks that the photo is left out by the third scan; rotates, and runs 15,000 random GUI events (monkey); fails on any wrong result, crash or ANR | `scripts/device-test.sh` (CI) |
 | Static analysis: Android lint | `./gradlew lintDebug` |
 
 ## Code
 
 | File | What it does |
 |---|---|
-| `core/ImageAnalysis.kt` | pHash with its turned, mirrored and centre-crop variants, the fine fingerprint, area resizing, sharpness (re-blur measure, Laplacian tiles, noise estimate, median filter), exposure, brightness and contrast |
+| `core/ImageAnalysis.kt` | pHash with its turned, mirrored and centre-crop variants, the fine fingerprint, the grid of local brightness and colour, area resizing, sharpness (re-blur measure, Laplacian tiles, noise estimate, median filter), exposure, brightness and contrast |
 | `core/Matcher.kt` | links identical files, look-alikes and burst frames, forms groups, splits them into versions (edits, crops, RAW twins), picks the copy to keep of each, and decides what to tick |
 | `core/FolderTree.kt` | the folder tree, its tick boxes, and the selection kept between runs |
 | `core/Names.kt` | copy names, original folders, sizes and counts |
@@ -215,7 +233,7 @@ this key: it is only fit for sideloading your own builds. Use a private key for 
 | `core/Journal.kt` | the note of files being read, which finds a photo that makes the app die |
 | `media/MediaIndex.kt` | reads photos, videos and storage volumes from Android's media index |
 | `media/Analyzer.kt` | opens a file once and reads its SHA-256, EXIF capture time and camera, and its pixels reduced to 960-1024 px |
-| `media/FeatureCache.kt` | the fingerprint cache (SQLite), so later scans only read new files |
+| `media/FeatureCache.kt` | the fingerprint cache (SQLite), so later scans only read new files; the grids are read from it one by one |
 | `media/Thumbs.kt` | thumbnails and full-size pictures, off the main thread |
 | `scan/Scanner.kt` | a scan of the ticked folders: the threads on every core, the watchdog and its spare threads, the second tries, the heat limit, the crash quarantine |
 | `scan/ScanService.kt`, `scan/ScanState.kt` | the scan as a foreground service with a notification and a wake lock, and its results and ticks |

@@ -48,6 +48,17 @@ class ImageFeatures(
     val median: Float,
     val black: Float,
     val white: Float,
+    /**
+     * What the picture looks like place by place: the mean brightness, then the mean of each of the
+     * two colour channels, of every cell of a [ImageAnalysis.GRID] x [ImageAnalysis.GRID] grid (three
+     * planes of bytes, row by row). The fingerprints above see the picture as a whole: a copy with a
+     * sticker or a caption added, a face blurred out or an object removed still passes them. It
+     * doesn't pass this: a re-saved or resized copy keeps every cell within a few levels.
+     *
+     * Null for pictures under [ImageAnalysis.GRID] pixels a side. Large for something kept for every
+     * photo, so it isn't held in memory once it is saved: whoever needs it then reads it back.
+     */
+    @Volatile var grid: ByteArray? = null,
 )
 
 /**
@@ -65,9 +76,18 @@ class Scratch {
     internal val line = DoubleArray(ImageAnalysis.REDUCED_SIZE + 2)
     internal val blurred = DoubleArray(ImageAnalysis.REDUCED_SIZE + 2)
     internal val hist = IntArray(256)
+    /** For each pixel column: the grid cell it falls in, and the share of it in that cell (the rest is in the next). */
+    internal var colCell = IntArray(0)
+    internal var colShare = DoubleArray(0)
+    internal val rowSums = DoubleArray(3 * ImageAnalysis.GRID)
+    internal val cellSums = DoubleArray(3 * ImageAnalysis.GRID * ImageAnalysis.GRID)
 
     internal fun ensure(w: Int, h: Int) {
         val n = w * h
+        if (colCell.size < w) {
+            colCell = IntArray(w)
+            colShare = DoubleArray(w)
+        }
         if (gray.size < n) {
             gray = IntArray(n)
             med = IntArray(n)
@@ -93,6 +113,18 @@ object ImageAnalysis {
     private const val FINE = 16
     const val FINE_BITS = FINE * FINE - 1
     private const val FLAT_STD = 2.0
+    /** Cells a side of the grid that describes a picture place by place ([ImageFeatures.grid]). */
+    const val GRID = 16
+    const val GRID_BYTES = 3 * GRID * GRID
+    /**
+     * Two pictures differ in part when a cell differs by this much in brightness or in colour, on top
+     * of what they differ by as a whole. Measured on generated photos reduced the way the app reduces
+     * them: re-saved and resized copies (JPEG quality 55 to 95, 800 px to full size, sharpened) stay
+     * within 3 and 2; a sticker 2.5 % of the width, a date stamp, a drawn circle or an object
+     * replaced give 6 or more in one of the two.
+     */
+    const val LOCAL_LUMA = 6
+    const val LOCAL_CHROMA = 5
 
     /**
      * Analyses one reduced photo. [fill] writes `count` rows of unpremultiplied ARGB pixels from row
@@ -108,34 +140,96 @@ object ImageAnalysis {
         var sumSat = 0.0
         var sumY = 0L
         var sumY2 = 0L
+        // The grid: every pixel adds to the cell it lies in; one that straddles the line between two
+        // cells adds its share to each, so a copy of another size gives the same cells.
+        val local = w >= GRID && h >= GRID
+        val colCell = s.colCell
+        val colShare = s.colShare
+        val rowSums = s.rowSums
+        val cellSums = s.cellSums
+        if (local) {
+            cellSums.fill(0.0)
+            for (x in 0 until w) {
+                val c = (x.toLong() * GRID / w).toInt()
+                val edge = (c + 1).toDouble() * w / GRID
+                colCell[x] = c * 3
+                colShare[x] = if (edge < x + 1 && c < GRID - 1) edge - x else 1.0
+            }
+        }
         var y0 = 0
         while (y0 < h) {
             val count = min(ROW_BLOCK, h - y0)
             fill(y0, count, s.rows)
             val rows = s.rows
-            val base = y0 * w
-            for (i in 0 until count * w) {
-                val p = rows[i]
-                val a = p ushr 24
-                var r = (p shr 16) and 0xFF
-                var g = (p shr 8) and 0xFF
-                var b = p and 0xFF
-                if (a < 255) {
-                    r = (r * a + 255 * (255 - a) + 127) / 255
-                    g = (g * a + 255 * (255 - a) + 127) / 255
-                    b = (b * a + 255 * (255 - a) + 127) / 255
+            for (ry in 0 until count) {
+                val y = y0 + ry
+                val base = y * w
+                val src = ry * w
+                if (local) rowSums.fill(0.0)
+                for (x in 0 until w) {
+                    val p = rows[src + x]
+                    val a = p ushr 24
+                    var r = (p shr 16) and 0xFF
+                    var g = (p shr 8) and 0xFF
+                    var b = p and 0xFF
+                    if (a < 255) {
+                        r = (r * a + 255 * (255 - a) + 127) / 255
+                        g = (g * a + 255 * (255 - a) + 127) / 255
+                        b = (b * a + 255 * (255 - a) + 127) / 255
+                    }
+                    val luma = (r * 19595 + g * 38470 + b * 7471 + 0x8000) shr 16   // ITU-R 601 luma, like PIL's "L"
+                    gray[base + x] = luma
+                    sumY += luma
+                    sumY2 += luma * luma
+                    val cb = 128.0 - 0.168736 * r - 0.331264 * g + 0.5 * b
+                    val cr = 128.0 + 0.5 * r - 0.418688 * g - 0.081312 * b
+                    sumCb += cb
+                    sumCr += cr
+                    sumSat += abs(cb - 128.0) + abs(cr - 128.0)
+                    if (local) {
+                        val c = colCell[x]
+                        val share = colShare[x]
+                        if (share >= 1.0) {
+                            rowSums[c] += luma
+                            rowSums[c + 1] += cb
+                            rowSums[c + 2] += cr
+                        } else {
+                            val rest = 1.0 - share
+                            rowSums[c] += luma * share
+                            rowSums[c + 1] += cb * share
+                            rowSums[c + 2] += cr * share
+                            rowSums[c + 3] += luma * rest
+                            rowSums[c + 4] += cb * rest
+                            rowSums[c + 5] += cr * rest
+                        }
+                    }
                 }
-                val luma = (r * 19595 + g * 38470 + b * 7471 + 0x8000) shr 16   // ITU-R 601 luma, like PIL's "L"
-                gray[base + i] = luma
-                sumY += luma
-                sumY2 += luma * luma
-                val cb = 128.0 - 0.168736 * r - 0.331264 * g + 0.5 * b
-                val cr = 128.0 + 0.5 * r - 0.418688 * g - 0.081312 * b
-                sumCb += cb
-                sumCr += cr
-                sumSat += abs(cb - 128.0) + abs(cr - 128.0)
+                if (local) {
+                    val c = (y.toLong() * GRID / h).toInt()
+                    val edge = (c + 1).toDouble() * h / GRID
+                    val share = if (edge < y + 1 && c < GRID - 1) edge - y else 1.0
+                    val at = c * GRID * 3
+                    if (share >= 1.0) {
+                        for (k in 0 until GRID * 3) cellSums[at + k] += rowSums[k]
+                    } else {
+                        val rest = 1.0 - share
+                        for (k in 0 until GRID * 3) {
+                            cellSums[at + k] += rowSums[k] * share
+                            cellSums[at + GRID * 3 + k] += rowSums[k] * rest
+                        }
+                    }
+                }
             }
             y0 += count
+        }
+        var grid: ByteArray? = null
+        if (local) {
+            val area = (w.toDouble() / GRID) * (h.toDouble() / GRID)
+            val out = ByteArray(GRID_BYTES)
+            for (cell in 0 until GRID * GRID) {
+                for (ch in 0 until 3) out[ch * GRID * GRID + cell] = (cellSums[cell * 3 + ch] / area).roundToInt().coerceIn(0, 255).toByte()
+            }
+            grid = out
         }
         val n = w * h
         val ph = phash(gray, w, h, s = s)
@@ -160,7 +254,39 @@ object ImageAnalysis {
             median = exp[0],
             black = exp[1],
             white = exp[2],
+            grid = grid,
         )
+    }
+
+    /**
+     * True when picture a and picture b differ in part: in some cell of their grids, by more than
+     * they differ as a whole (the median difference, which a slightly brighter re-save has everywhere).
+     * [turn] says how b must be turned to lie like a: -1 as it is, 0 a quarter clockwise, 1 half,
+     * 2 a quarter the other way (the order of [ImageFeatures.variants]).
+     */
+    fun differsInPart(a: ByteArray, b: ByteArray, turn: Int = -1): Boolean {
+        if (a.size != GRID_BYTES || b.size != GRID_BYTES) return true
+        val n = GRID
+        val d = IntArray(n * n)
+        for (ch in 0 until 3) {
+            val at = ch * n * n
+            for (m in 0 until n) {
+                for (k in 0 until n) {
+                    val from = when (turn) {
+                        0 -> (n - 1 - k) * n + m
+                        1 -> (n - 1 - m) * n + (n - 1 - k)
+                        2 -> k * n + (n - 1 - m)
+                        else -> m * n + k
+                    }
+                    d[m * n + k] = (a[at + m * n + k].toInt() and 0xFF) - (b[at + from].toInt() and 0xFF)
+                }
+            }
+            val sorted = d.sortedArray()
+            val median = (sorted[n * n / 2 - 1] + sorted[n * n / 2]) / 2
+            val limit = if (ch == 0) LOCAL_LUMA else LOCAL_CHROMA
+            if (sorted[0] - median <= -limit || sorted[n * n - 1] - median >= limit) return true
+        }
+        return false
     }
 
     /** The same, for pixels already in one array (the tests, and small pictures). */

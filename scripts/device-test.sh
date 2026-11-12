@@ -155,7 +155,7 @@ fi
 echo "== everything is ticked"
 r=$(scan '*'); echo "$r"
 sleep 1   # the lines for each group follow the result
-expect "$r" photos 26
+expect "$r" photos 27
 expect "$r" videos $((2 * VIDEOS))
 expect "$r" groups $((3 + VIDEOS))
 expect "$r" lookalike 1
@@ -178,6 +178,9 @@ grep ' GROUP lookalike ' logcat.txt | tail -1 | grep -q 'KEEP:Pictures/Edited/br
   ok "the brighter edit is kept as well" || fail "the brighter edit isn't kept as a version of its own"
 grep ' GROUP lookalike ' logcat.txt | tail -1 | grep -q 'TRASH:Pictures/Edited/brighter_small.jpg' &&
   ok "the edit's small copy goes" || fail "the edit's small copy isn't ticked"
+# a copy with a small sticker on it looks the same as a whole, not where the sticker is
+grep ' GROUP lookalike ' logcat.txt | tail -1 | grep -q 'KEEP:Pictures/Edited/sticker.jpg' &&
+  ok "the copy with a sticker is kept as well" || fail "the copy with a sticker isn't kept as a version of its own"
 last=$(grep -n ' RESULT ' logcat.txt | tail -1 | cut -d: -f1)
 if tail -n +"$last" logcat.txt | grep ' GROUP ' | grep -qE 'DOC_0|settings_'; then
   fail "different pages or screens were grouped"
@@ -210,6 +213,7 @@ if tap "^Move $TICKED to trash$"; then
   [ "$(echo "$gone" | grep -c .)" = "$PHOTOS_TICKED" ] && ok "$PHOTOS_TICKED photos in the trash" || fail "$(echo "$gone" | grep -c .) photos left the index, expected $PHOTOS_TICKED"
   echo "$after" | grep -qx 'DCIM/Camera/IMG_0001.jpg' && ok "the kept original is still there" || fail "the kept original is gone"
   echo "$after" | grep -qx 'Pictures/Edited/brighter.jpg' && ok "the kept edit is still there" || fail "the kept edit is gone"
+  echo "$after" | grep -qx 'Pictures/Edited/sticker.jpg' && ok "the copy with a sticker is still there" || fail "the copy with a sticker is gone"
   echo "$after" | grep -qx 'Download/IMG_0001 (1).jpg' && fail "the copy is still there" || ok "the copy is gone"
   if tap '^Undo$'; then
     sleep 3

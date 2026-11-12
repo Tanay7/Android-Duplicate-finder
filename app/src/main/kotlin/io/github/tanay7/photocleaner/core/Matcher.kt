@@ -52,6 +52,12 @@ class MatchOptions(
     val cancelled: () -> Boolean = { false },
     /** Told how far comparing every pair is: (done, total). Called from several threads. */
     val progress: ((Int, Int) -> Unit)? = null,
+    /**
+     * Gives the grid ([ImageFeatures.grid]) of an item whose features no longer hold it, or null if
+     * it can't be had. Called from several threads, for the few photos that are about to be taken
+     * for copies of each other.
+     */
+    val grid: ((Int) -> ByteArray?)? = null,
 ) {
     /**
      * Most differing fine bits ([ImageFeatures.fine], of 255) for two photos to count as look-alikes
@@ -143,7 +149,8 @@ class Group(
  *
  * Linked files form groups (a file can join through another one). Within a group, files that are
  * surely the same picture, unedited, form a version; a mirrored or cropped copy, one with other
- * brightness or colours (it may be a deliberate edit) and a RAW file's JPEG twin are versions of
+ * brightness or colours or that differs in part (a sticker, a caption, something removed: it may be a
+ * deliberate edit, or another shot of the same scene) and a RAW file's JPEG twin are versions of
  * their own. The best copy of every version is kept. Each other member is compared with the kept copy
  * of its version directly: pre-selected are only identical copies, sure look-alikes and burst frames
  * close to the kept shot; never a favourite, or a file that is only linked through another one.
@@ -204,7 +211,9 @@ class Matcher(private val items: List<Item>, private val o: MatchOptions = Match
                     val fj = f[j]
                     if (!colourOk(fi, fj)) continue
                     val fd = ImageAnalysis.fineDistance(fi.fine, fj.fine)
-                    if (fd <= linkFine) link(ph[i], ph[j], bits <= sureBits && fd <= sureFine && raw[i] == raw[j] && !edited(fi, fj))
+                    if (fd <= linkFine) {
+                        link(ph[i], ph[j], bits <= sureBits && fd <= sureFine && raw[i] == raw[j] && !edited(fi, fj) && !differsInPart(ph[i], ph[j], -1))
+                    }
                 }
                 for (j in 0 until n) {
                     if (j == i) continue
@@ -216,7 +225,9 @@ class Matcher(private val items: List<Item>, private val o: MatchOptions = Match
                         if (!colourOk(fi, fj)) continue
                         val fd = ImageAnalysis.fineDistance(fi.fine, if (v == 4) fj.cropFine else ImageAnalysis.fineVariant(fj.fine, v))
                         // Turned is the same picture; mirrored or cropped is a version of its own.
-                        if (fd <= linkFine) link(ph[i], ph[j], v < 3 && bits <= sureBits && fd <= sureFine && raw[i] == raw[j] && !edited(fi, fj))
+                        if (fd <= linkFine) {
+                            link(ph[i], ph[j], v < 3 && bits <= sureBits && fd <= sureFine && raw[i] == raw[j] && !edited(fi, fj) && !differsInPart(ph[i], ph[j], v))
+                        }
                     }
                 }
             }
@@ -361,6 +372,8 @@ class Matcher(private val items: List<Item>, private val o: MatchOptions = Match
                     rel == null -> "Linked to the best copy only through another file: kept as well"
                     rel.how == "mirrored" || rel.how == "cropped" -> "A ${rel.how} version (it may be a deliberate edit): kept as well"
                     edited -> "Its brightness or colours differ from the best copy's (it may be an edit): kept as well"
+                    rel.sure && rel.relation == Relation.LOOKALIKE ->
+                        "Part of the picture differs from the best copy's (an edit, or another shot of the same scene): kept as well"
                     else -> "It looks like the best copy but differs in the details: kept as well"
                 }
                 return@map Member(f, true, Relation.KEEP, rel?.score, rel?.how, null, false, flags, relSharp, note, frame, edited, version)
@@ -385,6 +398,9 @@ class Matcher(private val items: List<Item>, private val o: MatchOptions = Match
                     } else if (edited) {
                         suggest = false
                         note = "Its brightness or colours differ from the kept copy's (it may be an edit), so it isn't pre-selected"
+                    } else if (differsInPart(f, k, rel.turn)) {
+                        suggest = false
+                        note = "Part of the picture differs from the kept copy's (an edit, or another shot of the same scene), so it isn't pre-selected"
                     }
                 }
                 else -> Unit
@@ -413,7 +429,20 @@ class Matcher(private val items: List<Item>, private val o: MatchOptions = Match
         return Group(type, items[keeper].kind, ordered, keeper, if (isBurst) burstFids.size else 0)
     }
 
-    private class Rel(val relation: Relation, val score: Float?, val how: String?, val sure: Boolean)
+    /** [turn]: how the other picture lies against this one (-1 the same way, else the index of the variant that matched). */
+    private class Rel(val relation: Relation, val score: Float?, val how: String?, val sure: Boolean, val turn: Int = -1)
+
+    /**
+     * True when the two differ in part of the picture ([turn] as in [ImageAnalysis.differsInPart]),
+     * or when that can't be told: a file is only taken for a plain copy when it surely is one.
+     */
+    private fun differsInPart(a: Int, b: Int, turn: Int): Boolean {
+        val ga = gridOf(a) ?: return true
+        val gb = gridOf(b) ?: return true
+        return ImageAnalysis.differsInPart(ga, gb, turn)
+    }
+
+    private fun gridOf(i: Int): ByteArray? = items[i].features?.grid ?: o.grid?.invoke(i)
 
     /** The strongest check that matches item r directly against item k; [Rel.sure] when it may be pre-selected. */
     private fun relation(r: Int, k: Int): Rel? {
@@ -427,21 +456,21 @@ class Matcher(private val items: List<Item>, private val o: MatchOptions = Match
         if (fa.flat || fb.flat || !colourOk(fa, fb)) return null
         var best: Rel? = null
         var bestFine = Int.MAX_VALUE
-        fun consider(bits: Int, fine: () -> Int, how: String?) {
+        fun consider(bits: Int, fine: () -> Int, how: String?, turn: Int) {
             if (bits > o.maxBits) return
             val fd = fine()
             if (fd > o.linkFine || fd >= bestFine) return
             bestFine = fd
-            best = Rel(Relation.LOOKALIKE, ImageAnalysis.fineScore(fd), how, bits <= o.sureBits && fd <= o.sureFine)
+            best = Rel(Relation.LOOKALIKE, ImageAnalysis.fineScore(fd), how, bits <= o.sureBits && fd <= o.sureFine, turn)
         }
-        consider(ImageAnalysis.hamming(fa.phash, fb.phash), { ImageAnalysis.fineDistance(fa.fine, fb.fine) }, null)
+        consider(ImageAnalysis.hamming(fa.phash, fb.phash), { ImageAnalysis.fineDistance(fa.fine, fb.fine) }, null, -1)
         if (best == null) {
             for (v in 0 until 4) {
                 consider(ImageAnalysis.hamming(fa.phash, fb.variants[v]),
-                    { ImageAnalysis.fineDistance(fa.fine, ImageAnalysis.fineVariant(fb.fine, v)) }, VARIANT_NAMES[v])
+                    { ImageAnalysis.fineDistance(fa.fine, ImageAnalysis.fineVariant(fb.fine, v)) }, VARIANT_NAMES[v], v)
             }
-            consider(ImageAnalysis.hamming(fa.phash, fb.cropHash), { ImageAnalysis.fineDistance(fa.fine, fb.cropFine) }, "cropped")
-            consider(ImageAnalysis.hamming(fb.phash, fa.cropHash), { ImageAnalysis.fineDistance(fb.fine, fa.cropFine) }, "cropped")
+            consider(ImageAnalysis.hamming(fa.phash, fb.cropHash), { ImageAnalysis.fineDistance(fa.fine, fb.cropFine) }, "cropped", 4)
+            consider(ImageAnalysis.hamming(fb.phash, fa.cropHash), { ImageAnalysis.fineDistance(fb.fine, fa.cropFine) }, "cropped", 4)
         }
         return best
     }
