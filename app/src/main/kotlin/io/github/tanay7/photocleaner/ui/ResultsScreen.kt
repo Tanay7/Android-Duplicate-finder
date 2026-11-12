@@ -52,6 +52,7 @@ object Words {
                 m.version > 0 && m.how == "mirrored" -> "Mirrored · keep"
                 m.version > 0 && m.how == "cropped" -> "Cropped · keep"
                 m.version > 0 && m.edited -> "Edited · keep"
+                m.version > 0 && m.partDiffers -> "Differs in part · keep"
                 m.version > 0 && !m.frame -> "Other version · keep"
                 g.type == GroupType.BURST -> "Sharpest · keep"
                 else -> "Best copy · keep"
@@ -63,6 +64,7 @@ object Words {
                     m.how == "mirrored" -> "Mirrored · $pct"
                     m.how == "cropped" -> "Cropped · $pct"
                     m.edited -> "Edited · $pct"
+                    m.partDiffers -> "Differs in part · $pct"
                     m.how == "rotated" -> "Turned · $pct"
                     else -> "$pct alike"
                 }

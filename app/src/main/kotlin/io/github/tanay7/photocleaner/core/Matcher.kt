@@ -123,6 +123,8 @@ class Member(
      * edit, a crop, the RAW file). Every version keeps its own best copy.
      */
     val version: Int = 0,
+    /** A look-alike that differs from the kept copy in part of the picture: something added or removed, or another shot. */
+    val partDiffers: Boolean = false,
 )
 
 class Group(
@@ -205,6 +207,18 @@ class Matcher(private val items: List<Item>, private val o: MatchOptions = Match
             for (i in from until to) {
                 val h = hashes[i]
                 val fi = f[i]
+                // The grid of this row's photo, fetched once, when the first pair needs it.
+                var gi: ByteArray? = null
+                var asked = false
+                fun samePlaces(j: Int, turn: Int): Boolean {
+                    if (!asked) {
+                        gi = gridOf(ph[i])
+                        asked = true
+                    }
+                    val a = gi ?: return false
+                    val b = gridOf(ph[j]) ?: return false
+                    return !ImageAnalysis.differsInPart(a, b, turn)
+                }
                 for (j in i + 1 until n) {
                     val bits = java.lang.Long.bitCount(h xor hashes[j])
                     if (bits > maxBits) continue
@@ -212,7 +226,7 @@ class Matcher(private val items: List<Item>, private val o: MatchOptions = Match
                     if (!colourOk(fi, fj)) continue
                     val fd = ImageAnalysis.fineDistance(fi.fine, fj.fine)
                     if (fd <= linkFine) {
-                        link(ph[i], ph[j], bits <= sureBits && fd <= sureFine && raw[i] == raw[j] && !edited(fi, fj) && !differsInPart(ph[i], ph[j], -1))
+                        link(ph[i], ph[j], bits <= sureBits && fd <= sureFine && raw[i] == raw[j] && !edited(fi, fj) && samePlaces(j, -1))
                     }
                 }
                 for (j in 0 until n) {
@@ -226,7 +240,7 @@ class Matcher(private val items: List<Item>, private val o: MatchOptions = Match
                         val fd = ImageAnalysis.fineDistance(fi.fine, if (v == 4) fj.cropFine else ImageAnalysis.fineVariant(fj.fine, v))
                         // Turned is the same picture; mirrored or cropped is a version of its own.
                         if (fd <= linkFine) {
-                            link(ph[i], ph[j], v < 3 && bits <= sureBits && fd <= sureFine && raw[i] == raw[j] && !edited(fi, fj) && !differsInPart(ph[i], ph[j], v))
+                            link(ph[i], ph[j], v < 3 && bits <= sureBits && fd <= sureFine && raw[i] == raw[j] && !edited(fi, fj) && samePlaces(j, v))
                         }
                     }
                 }
@@ -367,16 +381,17 @@ class Matcher(private val items: List<Item>, private val o: MatchOptions = Match
                 // The best copy of another version: kept too. What sets it apart from the best copy overall:
                 val rel = relation(f, keeper)
                 val edited = rel?.relation == Relation.LOOKALIKE && edited(r.features!!, items[keeper].features!!)
+                val turned = rel?.how == "mirrored" || rel?.how == "cropped"
+                val part = rel != null && rel.relation == Relation.LOOKALIKE && rel.sure && !edited && !turned && r.raw == items[keeper].raw
                 val note = when {
                     r.raw != items[keeper].raw -> "The ${if (r.raw) "RAW" else "developed"} version of the photo: kept as well"
                     rel == null -> "Linked to the best copy only through another file: kept as well"
-                    rel.how == "mirrored" || rel.how == "cropped" -> "A ${rel.how} version (it may be a deliberate edit): kept as well"
+                    turned -> "A ${rel.how} version (it may be a deliberate edit): kept as well"
                     edited -> "Its brightness or colours differ from the best copy's (it may be an edit): kept as well"
-                    rel.sure && rel.relation == Relation.LOOKALIKE ->
-                        "Part of the picture differs from the best copy's (an edit, or another shot of the same scene): kept as well"
+                    part -> "Part of the picture differs from the best copy's (an edit, or another shot of the same scene): kept as well"
                     else -> "It looks like the best copy but differs in the details: kept as well"
                 }
-                return@map Member(f, true, Relation.KEEP, rel?.score, rel?.how, null, false, flags, relSharp, note, frame, edited, version)
+                return@map Member(f, true, Relation.KEEP, rel?.score, rel?.how, null, false, flags, relSharp, note, frame, edited, version, part)
             }
             val rel = relation(f, k)
             val relation = rel?.relation ?: Relation.VIA
@@ -384,6 +399,7 @@ class Matcher(private val items: List<Item>, private val o: MatchOptions = Match
             var note: String? = null
             var via: Int? = null
             var edited = false
+            var part = false
             when (relation) {
                 Relation.VIA -> via = fids.firstOrNull { it != f && it != k && relation(f, it) != null }
                 Relation.BURST ->
@@ -400,6 +416,7 @@ class Matcher(private val items: List<Item>, private val o: MatchOptions = Match
                         note = "Its brightness or colours differ from the kept copy's (it may be an edit), so it isn't pre-selected"
                     } else if (differsInPart(f, k, rel.turn)) {
                         suggest = false
+                        part = true
                         note = "Part of the picture differs from the kept copy's (an edit, or another shot of the same scene), so it isn't pre-selected"
                     }
                 }
@@ -413,7 +430,7 @@ class Matcher(private val items: List<Item>, private val o: MatchOptions = Match
                 suggest = false
                 note = "A favourite, so it isn't pre-selected"
             }
-            Member(f, false, relation, rel?.score, rel?.how, via, suggest, flags, relSharp, note, frame, edited, version)
+            Member(f, false, relation, rel?.score, rel?.how, via, suggest, flags, relSharp, note, frame, edited, version, part)
         }
         val others = members.filter { !it.keeper }
         val type = when {

@@ -195,8 +195,9 @@ class Scanner(
         if (cache.save(rows)) for (r in rows) r.features?.grid = null
     }
 
+    /** Grids read back, the latest 16,000 of them (12 MB): enough for a folder of that many near-identical frames. */
     private val gridsRead = object : LinkedHashMap<Int, ByteArray>(256, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Int, ByteArray>?) = size > 4096
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Int, ByteArray>?) = size > 16_000
     }
 
     /** The grid of item [i]: still in memory, or read back from the cache. Called from the comparing threads. */

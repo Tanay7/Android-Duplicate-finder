@@ -404,6 +404,7 @@ class MatcherTest {
         val m = match(pair).single().members.first { it.item == 1 }
         assertTrue(m.keeper)
         assertFalse(m.edited)
+        assertTrue(m.partDiffers)
         assertTrue(m.note!!.contains("Part of the picture"))
     }
 

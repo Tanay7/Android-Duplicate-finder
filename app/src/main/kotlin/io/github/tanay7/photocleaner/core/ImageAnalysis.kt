@@ -260,16 +260,21 @@ object ImageAnalysis {
 
     /**
      * True when picture a and picture b differ in part: in some cell of their grids, by more than
-     * they differ as a whole (the median difference, which a slightly brighter re-save has everywhere).
+     * they differ as a whole (the mean difference, which a slightly brighter re-save has everywhere).
      * [turn] says how b must be turned to lie like a: -1 as it is, 0 a quarter clockwise, 1 half,
      * 2 a quarter the other way (the order of [ImageFeatures.variants]).
+     *
+     * Allocates nothing: it runs for every pair of photos that look the same as a whole, which in a
+     * folder of a thousand near-identical frames is half a million pairs.
      */
     fun differsInPart(a: ByteArray, b: ByteArray, turn: Int = -1): Boolean {
         if (a.size != GRID_BYTES || b.size != GRID_BYTES) return true
         val n = GRID
-        val d = IntArray(n * n)
         for (ch in 0 until 3) {
             val at = ch * n * n
+            var sum = 0
+            var least = Int.MAX_VALUE
+            var most = Int.MIN_VALUE
             for (m in 0 until n) {
                 for (k in 0 until n) {
                     val from = when (turn) {
@@ -278,13 +283,15 @@ object ImageAnalysis {
                         2 -> k * n + (n - 1 - m)
                         else -> m * n + k
                     }
-                    d[m * n + k] = (a[at + m * n + k].toInt() and 0xFF) - (b[at + from].toInt() and 0xFF)
+                    val d = (a[at + m * n + k].toInt() and 0xFF) - (b[at + from].toInt() and 0xFF)
+                    sum += d
+                    if (d < least) least = d
+                    if (d > most) most = d
                 }
             }
-            val sorted = d.sortedArray()
-            val median = (sorted[n * n / 2 - 1] + sorted[n * n / 2]) / 2
+            val mean = sum.toDouble() / (n * n)
             val limit = if (ch == 0) LOCAL_LUMA else LOCAL_CHROMA
-            if (sorted[0] - median <= -limit || sorted[n * n - 1] - median >= limit) return true
+            if (mean - least >= limit || most - mean >= limit) return true
         }
         return false
     }
