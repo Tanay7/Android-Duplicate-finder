@@ -142,18 +142,27 @@ class ImageAnalysisTest {
 
     @Test fun medianFilterMatchesTheNaiveOne() {
         val rnd = Random(5)
-        val w = 37
-        val h = 23
-        val src = IntArray(w * h) { rnd.nextInt(256) }
-        for (r in 1..2) {
-            val fast = Sharpness.medianFilter(src, w, h, r)
-            for (y in 0 until h) for (x in 0 until w) {
-                val win = ArrayList<Int>()
-                for (dy in -r..r) for (dx in -r..r) win.add(src[(y + dy).coerceIn(0, h - 1) * w + (x + dx).coerceIn(0, w - 1)])
-                win.sort()
-                assertEquals("r=$r at $x,$y", win[win.size / 2], fast[y * w + x])
+        // every shape of picture, the thinnest included; few different values too, so equal ones meet
+        for ((w, h) in listOf(37 to 23, 1 to 1, 1 to 9, 9 to 1, 2 to 2, 3 to 3, 2 to 7, 64 to 5, 5 to 64)) {
+            for (values in listOf(256, 3)) {
+                val src = IntArray(w * h) { rnd.nextInt(values) * (255 / (values - 1)) }
+                for (r in 1..2) {
+                    val fast = Sharpness.medianFilter(src, w, h, r)
+                    val byHistogram = Sharpness.medianByHistogram(src, w, h, r)
+                    for (y in 0 until h) for (x in 0 until w) {
+                        val win = ArrayList<Int>()
+                        for (dy in -r..r) for (dx in -r..r) win.add(src[(y + dy).coerceIn(0, h - 1) * w + (x + dx).coerceIn(0, w - 1)])
+                        win.sort()
+                        assertEquals("${w}x$h r=$r at $x,$y", win[win.size / 2], fast[y * w + x])
+                        assertEquals("${w}x$h r=$r at $x,$y", win[win.size / 2], byHistogram[y * w + x])
+                    }
+                }
             }
         }
+        // and a real picture, against the other way of doing it
+        val p = Scenes.noise(Scenes.scene(9, 300, 200), 6.0, 2)
+        val grey = IntArray(p.w * p.h) { (p.px[it] shr 8) and 0xFF }
+        assertTrue(Sharpness.medianFilter(grey, p.w, p.h, 1).contentEquals(Sharpness.medianByHistogram(grey, p.w, p.h, 1)))
     }
 
     @Test fun areaResizeKeepsTheMean() {

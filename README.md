@@ -164,6 +164,11 @@ Reader do it:
   4032, 4080 and 8160 px all land there in one step), and reduces the rest of the way itself where
   none does. Decoders that can only reduce by skipping pixels (PNG, HEIC, AVIF) are asked for half
   the reduction, and the app averages the last halving, so blur is measured alike in every format.
+- **The noise filter is the quick kind.** Before a photo's sharpness is measured, its noise is
+  filtered out with a median filter, which was two thirds of the work of analysing a photo. For the
+  3 x 3 window most photos need, every column of three pixels is now sorted once and shared by the
+  three windows it is in (4 ms for a photo instead of 26, the same values); the 5 x 5 window of
+  very noisy photos updates its histogram without branches (16 ms instead of 25).
 - **Decoders share a memory budget.** JPEG, PNG and WebP are decoded reduced. HEIC and AVIF are
   decoded whole first and a RAW file is developed whole, so a 50-megapixel HEIC takes 300 MB for a
   moment: those wait for each other when memory is short, while small photos keep every core busy.
