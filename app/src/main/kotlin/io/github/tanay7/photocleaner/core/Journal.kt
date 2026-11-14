@@ -11,8 +11,9 @@ import java.nio.channels.FileChannel
  *
  * A crash inside a picture decoder can't be caught: the whole app dies. When that happens, the next
  * scan finds here which files were in flight. Those read alongside others are only suspects, and are
- * read again one at a time; a file that was being read on its own when the app died is the culprit,
- * and is left out from then on. So one bad file can stop a scan twice, and never a third time.
+ * read again one at a time; a file that was being read on its own when the app died of a crash is
+ * the culprit, and is left out from then on. So one bad file can stop a scan twice, and never a
+ * third time.
  *
  * Every reading thread has a slot. Writes go straight to the file (no buffering), where the system
  * keeps them even if the app dies the next instant.

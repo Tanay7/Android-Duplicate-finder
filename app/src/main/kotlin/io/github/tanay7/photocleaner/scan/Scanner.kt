@@ -263,7 +263,11 @@ class Scanner(
         Prefs.setSuspects(ctx, now)
     }
 
-    /** True if the app's last death was a crash (in a decoder, or out of memory), not the user or the system closing it. */
+    /**
+     * True if the app's last death was what a decoder gone wrong causes: a crash, a signal, or a kill
+     * for low memory or excessive resource use; not the user closing it, or the system stopping it
+     * for another reason.
+     */
     private fun diedOfACrash(journal: File): Boolean = try {
         val am = ctx.getSystemService(ActivityManager::class.java)
         val last = am?.getHistoricalProcessExitReasons(ctx.packageName, 0, 1)?.firstOrNull()
@@ -335,8 +339,8 @@ class Scanner(
             return try {
                 Thread({
                     try {
-                        // Normal priority, a notch below the screen's: low enough to keep the phone smooth,
-                        // high enough not to be confined to the slow cores the way background threads can be.
+                        // One notch below normal priority: low enough to keep the phone smooth, high enough
+                        // not to be moved to the slow cores, as threads at background priority can be.
                         Process.setThreadPriority(Process.THREAD_PRIORITY_DEFAULT + Process.THREAD_PRIORITY_LESS_FAVORABLE)
                         val worker = Analyzer.Worker(stop) { since.set(w, SystemClock.elapsedRealtime()) }
                         workers.set(w, worker)

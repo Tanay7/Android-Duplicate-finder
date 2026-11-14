@@ -52,8 +52,8 @@ object Parallelism {
      * A JPEG decoder reduces by 2, 4 or 8 as it decodes, for less work than the whole picture.
      * Asked for any other size (1024 px of a 4000 px photo, a reduction by 3.9), Android's decoder
      * reads the whole picture, keeps every third pixel and scales the rest: slower (with Pillow's
-     * libjpeg-turbo on a desktop, a 12-megapixel photo took 49 ms whole and 20 ms at a quarter, a
-     * 50-megapixel one 209 ms whole and 83 ms at an eighth), and the skipped pixels leave jagged
+     * libjpeg-turbo on a desktop, a 12-megapixel photo took 51 ms whole and 26 ms at a quarter, a
+     * 50-megapixel one 248 ms whole and 92 ms at an eighth), and the skipped pixels leave jagged
      * detail. So the decoder is asked for a power of two, and what comes out larger than
      * [ImageAnalysis.REDUCED_SIZE] is reduced the rest of the way, smoothly. The phones' usual sizes
      * (4000, 4032, 4080 and 8160 px) come out at 1000 to 1020 px with no second step.

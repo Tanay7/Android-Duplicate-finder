@@ -27,8 +27,9 @@ Pictures/CrashTest/*.jpg          3 photos; a test build of the app dies on purp
                                   the one named photocleaner-crash-test.jpg   -> left out the third time
 
 The pages and the screens are chosen so that a 64-bit perceptual hash alone takes them for burst
-frames and look-alikes (each page is within 10 bits of the one before, the screens 6 bits apart);
-the screens, mostly white, would also count as overexposed if screenshots were judged like photos.
+frames and look-alikes (by the app's hash, computed on a desktop: each page 8 to 12 bits from the one
+before, within the 16 of a burst; the screens 8 bits apart, within the 8 of a look-alike); the
+screens, mostly white, would also count as overexposed if screenshots were judged like photos.
 
 Expected from a scan of everything: one look-alike group of 8 (the camera original kept with 4
 copies of it ticked, the brighter edit kept as well with its small copy ticked, the copy with the
@@ -194,8 +195,8 @@ def main(out):
     save(pano.resize((2000, 500), Image.LANCZOS), out, "Pictures/Big/panorama_small.jpg", quality=80)
     pano.save(os.path.join(out, "Pictures/Big/panorama.webp"), "WEBP", quality=80)
 
-    # A HEIC photo is half the size of the JPEG made from it: of the two, the HEIC from the camera
-    # is the one to keep, although the JPEG is the larger file.
+    # A HEIC photo is a smaller file than the JPEG made from it (here a little over half its size):
+    # of the two, the HEIC from the camera is the one to keep, although the JPEG is the larger file.
     phone = scene(12, 4000, 3000)
     if save_heic(phone, out, "DCIM/Imports/IMG_0002.heic", ex=exif("2024:05:03 09:00:00")):
         save(phone, out, "Pictures/Converted/IMG_0002.jpg", quality=92)

@@ -87,8 +87,9 @@ object Analyzer {
                 return failed(item, rd, "Can't read: ${e.message ?: e.javaClass.simpleName}")
             }
             if (!wantFeatures) return row(item, rd, sha, item.shownWidth, item.shownHeight, null, null, null, null)
-            // Memory first: decoding (and, for a RAW file, even reading its EXIF data) can take hundreds
-            // of megabytes. Waiting for it isn't time the file took: the watchdog's clock is reset meanwhile.
+            // Memory first: decoding can take hundreds of megabytes, and reading a RAW file's EXIF data
+            // keeps in memory all of the file it reads. Waiting for it isn't time the file took: the
+            // watchdog's clock is reset meanwhile.
             w.held.set(
                 rd.budget.acquire(Parallelism.decodeBytes(item.mime, item.name, item.width, item.height)) {
                     w.touch()

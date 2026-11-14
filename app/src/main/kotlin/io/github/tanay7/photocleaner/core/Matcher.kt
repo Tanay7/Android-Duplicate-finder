@@ -63,10 +63,10 @@ class MatchOptions(
 ) {
     /**
      * Most differing fine bits ([ImageFeatures.fine], of 255) for two photos to count as look-alikes
-     * at all. The 64 bits of the pHash only see a picture's layout: about 1 pair in 100 of different
-     * text pages, and some pairs of different app screens, pass them. Real copies differ in under 16
-     * fine bits (under 35 when cut by a hundredth); different pictures that share their layout in
-     * over 55.
+     * at all. The 64 bits of the pHash only see a picture's layout: of 1,770 pairs of different text
+     * pages generated for the tests, 10 pass them. In the same tests, copies resized to half or saved
+     * again differ in at most 8 fine bits, a quarter-size copy in up to 20 and one cut by a hundredth
+     * in up to 31; different pages and app screens, however alike their layout, in 61 or more.
      */
     val linkFine: Int get() = if (maxBits <= 4) 16 else 48
 
@@ -80,9 +80,10 @@ class MatchOptions(
         /** Most differing pHash bits between neighbouring burst shots. */
         const val BURST_BITS = 16
         /**
-         * Most differing fine bits between burst shots. Pages of a document photographed one after
-         * the other are within [BURST_BITS] three times in ten, but differ in over 60 fine bits
-         * (in 80 or more nineteen times in twenty); hand-held frames of one moment differ in under 55.
+         * Most differing fine bits between burst shots. Of 40 pages of a document generated for the
+         * tests, photographed one after the other, 8 are within [BURST_BITS] of the page before, but
+         * every page differs from it in 82 fine bits or more; hand-held frames of one moment (moved
+         * by up to 12 px, with sensor noise) differ in at most 47.
          */
         const val BURST_FINE = 56
         /** Chroma difference (0-255 scale) above which photos differ in colour. */

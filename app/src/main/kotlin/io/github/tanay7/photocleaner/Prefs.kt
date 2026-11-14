@@ -4,7 +4,10 @@ import android.content.Context
 import android.content.SharedPreferences
 import io.github.tanay7.photocleaner.scan.ScanOptions
 
-/** Settings kept between runs: the folders to search and what to look for. */
+/**
+ * What is kept between runs: the folders to search, what to look for, the choices made by hand in
+ * the results, the files to read one at a time after the app died, and the questions already asked.
+ */
 object Prefs {
     private fun sp(ctx: Context): SharedPreferences = ctx.getSharedPreferences("settings", Context.MODE_PRIVATE)
 
@@ -78,7 +81,7 @@ object Prefs {
 
     /**
      * Files you chose to keep although they were suggested for the trash. They are never ticked for
-     * you again, in any later scan (until the file is gone).
+     * you again, in any later scan (until the file is gone). At most [MAX_CHOICES] are remembered.
      */
     @Synchronized fun keeps(ctx: Context): Set<String> = HashSet(keepsLive(ctx))
 

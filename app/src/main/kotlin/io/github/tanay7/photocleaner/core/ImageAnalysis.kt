@@ -663,8 +663,8 @@ object Sharpness {
      * The 3 x 3 median: of the nine values, the middle one of (the largest of the columns' smallest,
      * the middle of their middles, the smallest of their largest). Every column of three is sorted
      * once and used by the three windows it is in, with nothing but minima and maxima: under a
-     * quarter of the time of the sliding histogram (4.6 ms against 20 for 1024 x 768 pixels, on the
-     * JVM), and the same values.
+     * quarter of the time of the sliding histogram (about 4.5 ms against 20 for 1024 x 768 pixels, on
+     * a desktop's JVM), and the same values.
      */
     private fun median3(src: IntArray, w: Int, h: Int, out: IntArray): IntArray {
         for (y in 0 until h) {
