@@ -135,7 +135,6 @@ class Group(
     val members: List<Member>,
     /** The item suggested to keep, or -1 for the list of poor shots. */
     val keeper: Int,
-    val burstShots: Int,
 )
 
 /**
@@ -454,7 +453,7 @@ class Matcher(private val items: List<Item>, private val o: MatchOptions = Match
         } else {
             members.sortedWith(compareBy({ it.version }, { !it.keeper }, { -(it.score ?: -1f) }, { items[it.item].path }))
         }
-        return Group(type, items[keeper].kind, ordered, keeper, if (isBurst) burstFids.size else 0)
+        return Group(type, items[keeper].kind, ordered, keeper)
     }
 
     /** [turn]: how the other picture lies against this one (-1 the same way, else the index of the variant that matched). */
@@ -611,7 +610,7 @@ class Matcher(private val items: List<Item>, private val o: MatchOptions = Match
         }
         if (members.isEmpty()) return null
         members.sortWith(compareBy({ items[it.item].features!!.sharpness }, { items[it.item].path }))
-        return Group(GroupType.POOR, MediaKind.PHOTO, members, -1, 0)
+        return Group(GroupType.POOR, MediaKind.PHOTO, members, -1)
     }
 
     private fun colourOk(a: ImageFeatures, b: ImageFeatures): Boolean {

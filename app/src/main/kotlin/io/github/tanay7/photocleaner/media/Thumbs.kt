@@ -90,11 +90,6 @@ object Thumbs {
         null
     }
 
-    fun forget(uri: Uri) {
-        val prefix = "$uri@"
-        for (k in cache.snapshot().keys) if (k.startsWith(prefix)) cache.remove(k)
-    }
-
     /** Runs [task] on the loader threads; nothing it throws can take the app down. */
     fun run(task: Runnable) = exec.execute {
         try {

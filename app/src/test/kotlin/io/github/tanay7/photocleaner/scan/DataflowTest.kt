@@ -97,7 +97,7 @@ class DataflowTest {
         val look = groups.single { g -> g.members.any { it.item == 0 } }
         val burst = groups.single { it.type == GroupType.BURST }
         assertEquals(GroupType.SIMILAR, look.type)
-        assertEquals(3, burst.burstShots)
+        assertEquals(3, burst.members.count { it.frame })
 
         for (g in groups) {
             // one copy kept for every version, and nothing kept is ticked, by the matcher or in the results

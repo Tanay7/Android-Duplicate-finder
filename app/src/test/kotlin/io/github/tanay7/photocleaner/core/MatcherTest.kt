@@ -417,7 +417,7 @@ class MatcherTest {
         }
         val g = match(items).single()
         assertEquals(GroupType.BURST, g.type)
-        assertEquals(6, g.burstShots)
+        assertEquals(6, g.members.count { it.frame })
         assertEquals(setOf(2, 3), g.members.filter { it.keeper }.map { it.item }.toSet())   // B_1.dng and B_1.jpg
         assertEquals(4, g.members.count { it.suggestTrash })
         assertTrue(g.members.all { it.frame })
@@ -475,7 +475,7 @@ class MatcherTest {
         val items = frames.mapIndexed { i, p -> photo("DCIM/Camera/B_$i.jpg", p.features(), taken = 50.0 + 0.3 * i, camera = "Pixel 9", w = 3000, h = 4000) }
         val g = match(items).single()
         assertEquals(GroupType.BURST, g.type)
-        assertEquals(5, g.burstShots)
+        assertEquals(5, g.members.count { it.frame })
         assertEquals(4, g.members.count { it.suggestTrash })
     }
 
@@ -837,7 +837,7 @@ class MatcherTest {
         }
         val g = match(items).single()
         assertEquals(GroupType.BURST, g.type)
-        assertEquals(4, g.burstShots)
+        assertEquals(4, g.members.count { it.frame })
         assertEquals(1, g.keeper)
         assertEquals(listOf(0, 1, 2, 3), g.members.map { it.item })   // in time order
         assertTrue(g.members.filter { !it.keeper }.all { it.suggestTrash && it.relation == Relation.BURST })
@@ -870,7 +870,7 @@ class MatcherTest {
         )
         val g = match(items).single()
         assertEquals(0, g.keeper)              // the export never outranks the full-size frames
-        assertEquals(2, g.burstShots)
+        assertEquals(2, g.members.count { it.frame })
     }
 
     @Test fun poorShotsAreListedButNeverPreselected() {

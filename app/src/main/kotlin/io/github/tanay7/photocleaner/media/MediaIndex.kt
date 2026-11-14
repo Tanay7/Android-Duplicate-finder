@@ -68,10 +68,10 @@ object MediaIndex {
      * Every photo and video the app may see, on every storage volume. Items in the trash or still being
      * written are left out by MediaStore itself.
      */
-    fun query(ctx: Context, photos: Boolean = true, videos: Boolean = true): List<MediaItem> {
+    fun query(ctx: Context): List<MediaItem> {
         val out = ArrayList<MediaItem>()
-        if (photos) read(ctx, MediaKind.PHOTO, out)
-        if (videos) read(ctx, MediaKind.VIDEO, out)
+        read(ctx, MediaKind.PHOTO, out)
+        read(ctx, MediaKind.VIDEO, out)
         return out
     }
 

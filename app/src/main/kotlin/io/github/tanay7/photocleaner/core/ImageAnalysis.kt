@@ -109,7 +109,6 @@ object ImageAnalysis {
      * is measured at nearly the same scale, and blur means the same for all of them.
      */
     const val SMALLEST_REDUCED = 960
-    const val HASH_BITS = 64
     /** Rows of pixels fetched at a time. */
     const val ROW_BLOCK = 32
     /** The fine fingerprint covers the FINE x FINE lowest frequencies, less the first: 255 bits. */
@@ -516,9 +515,6 @@ object ImageAnalysis {
     }
 
     fun hamming(a: Long, b: Long): Int = java.lang.Long.bitCount(a xor b)
-
-    /** DupeFinder's visual score: the share of the 64 hash bits that agree. */
-    fun visualScore(bits: Int): Float = (HASH_BITS - bits) * 100f / HASH_BITS
 
     internal fun round1(v: Double): Float = ((v * 10).roundToInt() / 10.0).toFloat()
     internal fun round2(v: Double): Float = ((v * 100).roundToInt() / 100.0).toFloat()

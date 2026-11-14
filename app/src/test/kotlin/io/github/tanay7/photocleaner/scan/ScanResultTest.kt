@@ -22,7 +22,7 @@ class ScanResultTest {
     private fun copy(i: Int, version: Int = 0, suggest: Boolean = true) =
         Member(i, false, Relation.LOOKALIKE, 100f, null, null, suggest, emptySet(), null, null, false, false, version)
 
-    private fun group(vararg m: Member) = Group(GroupType.SIMILAR, MediaKind.PHOTO, m.toList(), m.first { it.keeper }.item, 0)
+    private fun group(vararg m: Member) = Group(GroupType.SIMILAR, MediaKind.PHOTO, m.toList(), m.first { it.keeper }.item)
 
     private fun result(groups: List<Group>, keeps: Set<String> = emptySet(), ticks: Set<String> = emptySet()): ScanResult {
         val n = groups.maxOf { g -> g.members.maxOf { it.item } } + 1

@@ -40,8 +40,6 @@ class Palette(ctx: Context) {
     val outline = c(android.R.color.system_neutral2_400, android.R.color.system_neutral2_500)
     val danger = if (dark) 0xFFF2B8B5.toInt() else 0xFFB3261E.toInt()
     val onDanger = if (dark) 0xFF601410.toInt() else Color.WHITE
-    val dangerContainer = if (dark) 0xFF8C1D18.toInt() else 0xFFF9DEDC.toInt()
-    val onDangerContainer = if (dark) 0xFFF9DEDC.toInt() else 0xFF410E0B.toInt()
     val keep = if (dark) 0xFF6DD58C.toInt() else 0xFF146C2E.toInt()
     val onKeep = if (dark) 0xFF00391A.toInt() else Color.WHITE
     val ripple = if (dark) 0x33FFFFFF else 0x1F000000
@@ -82,7 +80,7 @@ class Ui(val ctx: Context) {
         return RippleDrawable(ColorStateList.valueOf(rippleColor), content, mask)
     }
 
-    enum class Style { FILLED, TONAL, TEXT, DANGER, OUTLINED }
+    enum class Style { FILLED, TONAL, TEXT, DANGER }
 
     fun button(label: String, style: Style = Style.FILLED, onClick: () -> Unit): TextView {
         val (bg, fg) = when (style) {
@@ -90,7 +88,6 @@ class Ui(val ctx: Context) {
             Style.TONAL -> c.secondaryContainer to c.onSecondaryContainer
             Style.TEXT -> Color.TRANSPARENT to c.primary
             Style.DANGER -> c.danger to c.onDanger
-            Style.OUTLINED -> Color.TRANSPARENT to c.primary
         }
         return text(label, 14f, fg, 500).apply {
             gravity = Gravity.CENTER
@@ -100,7 +97,6 @@ class Ui(val ctx: Context) {
             setPadding(dp(h), dp(10), dp(h), dp(10))
             val content = when (style) {
                 Style.TEXT -> null
-                Style.OUTLINED -> rounded(Color.TRANSPARENT, 20f, c.outline, 1f)
                 else -> rounded(bg, 20f)
             }
             background = pressable(content, 20f)
