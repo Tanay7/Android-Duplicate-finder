@@ -35,14 +35,14 @@ import kotlin.math.roundToInt
 object Words {
     fun groupTitle(g: Group, live: List<Member>): String = when {
         g.type == GroupType.POOR -> Fmt.plural(live.size, "blurry or dark photo", "blurry or dark photos")
-        g.kind == MediaKind.VIDEO -> "${live.size} identical videos"
+        g.kind == MediaKind.VIDEO -> "${Fmt.count(live.size)} identical videos"
         g.type == GroupType.BURST -> {
             // The shots of the burst, and any copies of them that were found as well.
             val shots = live.count { it.frame }
             "Burst · ${Fmt.plural(shots, "shot", "shots")}" + if (live.size > shots) " and ${Fmt.plural(live.size - shots, "copy", "copies")}" else ""
         }
-        g.type == GroupType.IDENTICAL -> "${live.size} identical copies"
-        else -> "${live.size} look-alike photos"
+        g.type == GroupType.IDENTICAL -> "${Fmt.count(live.size)} identical copies"
+        else -> "${Fmt.count(live.size)} look-alike photos"
     }
 
     fun label(m: Member, g: Group): String {
@@ -81,18 +81,26 @@ object Words {
         return if (flags.isEmpty()) base else "$base · ${flags.first()}"
     }
 
-    /** Why a member is (or isn't) suggested for the trash, for the viewer. */
+    /**
+     * Why a member is (or isn't) suggested for the trash, for the viewer. The words follow how the
+     * matcher chose: among burst frames the sharpest (detail halved for a dark or clipped shot) or a
+     * starred one; otherwise the most pixels, then (for files of one kind) the largest file, then a
+     * name without a copy marker and a file in a camera or screenshots folder.
+     */
     fun reason(r: ScanResult, m: Member, g: Group): String = when {
         m.keeper && m.note != null -> m.note
-        m.keeper && g.type == GroupType.BURST -> "The sharpest shot of the burst: suggested to keep."
-        m.keeper -> "The best copy (largest, sharpest, an original rather than a saved copy): suggested to keep."
+        m.keeper && m.frame && Flag.FAVORITE in m.flags -> "A shot you starred: suggested to keep."
+        m.keeper && m.frame -> "The sharpest shot of the burst: suggested to keep."
+        m.keeper && Flag.FAVORITE in m.flags -> "A favourite, with as many pixels as any copy: suggested to keep."
+        m.keeper -> "The best copy (the most pixels, then the largest file; an original rather than a saved copy): suggested to keep."
         m.note != null -> m.note
         m.relation == Relation.VIA -> "Matched only through another file of the group, so it isn't ticked for you." +
             (m.via?.let { " It looks like ${r.items[it].name}." } ?: "")
         m.relation == Relation.POOR -> "Possibly a poor shot. It isn't ticked for you: decide for yourself."
         m.relation == Relation.IDENTICAL -> "Byte-for-byte the same file as ${kept(r, m, g, "copy")}."
-        m.relation == Relation.BURST -> "Another shot of the same moment, no sharper than ${kept(r, m, g, "shot")}."
-        m.relation == Relation.LOOKALIKE -> "The same picture as ${kept(r, m, g, "copy")}, at a smaller size or saved again."
+        m.relation == Relation.BURST -> "Another shot of the same moment as ${kept(r, m, g, "shot")}."
+        m.relation == Relation.LOOKALIKE && m.how == "rotated" -> "The same picture as ${kept(r, m, g, "copy")}, turned."
+        m.relation == Relation.LOOKALIKE -> "The same picture as ${kept(r, m, g, "copy")}, smaller or saved again."
         else -> ""
     }
 
@@ -297,7 +305,7 @@ class ResultsScreen(act: MainActivity, private val r: ScanResult) : Screen(act) 
         emptyTitle.text = if (r.trashed.isEmpty()) "No duplicates found" else "All cleaned up"
         emptyBody.text = "Checked ${Fmt.plural(r.photoCount, "photo", "photos")} and ${Fmt.plural(r.videoCount, "video", "videos")} " +
             "in ${Fmt.plural(r.folders, "folder", "folders")}" +
-            (if (r.trashed.isNotEmpty()) ", and ${Fmt.plural(r.trashed.size, "file", "files")} went to the trash." else ".") +
+            (if (r.trashed.isNotEmpty()) ", and ${Fmt.plural(r.trashed.size, "file has", "files have")} gone since (to the trash, or deleted elsewhere)." else ".") +
             (if (r.unreadable > 0) "\n${Fmt.plural(r.unreadable, "file", "files")} couldn't be read." else "")
 
         val sel = selectedLive()

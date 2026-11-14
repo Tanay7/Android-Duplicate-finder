@@ -8,10 +8,10 @@ import java.util.Locale
 
 class FolderTreeTest {
     private val folders = listOf(
-        FolderInfo("external_primary", "DCIM/Camera", 10, 2, 1000),
+        FolderInfo("external_primary", "DCIM/Camera", 10, 2, 900, 100),
         FolderInfo("external_primary", "Pictures/Screenshots", 5, 0, 100),
         FolderInfo("external_primary", "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Images", 7, 0, 70),
-        FolderInfo("external_primary", "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Video", 0, 3, 300),
+        FolderInfo("external_primary", "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Video", 0, 3, 0, 300),
         FolderInfo("external_primary", "", 1, 0, 1),
         FolderInfo("1234-5678", "DCIM/Camera", 4, 0, 40),
     )
@@ -33,6 +33,19 @@ class FolderTreeTest {
         assertEquals(2, wa.children[0].depth)
         assertEquals("external_primary:DCIM/Camera", phone.children[1].key)
         assertEquals(roots[1], roots[1].children[0].parent)
+    }
+
+    @Test fun aScanOfOnlyPhotosOrOnlyVideosCountsOnlyTheirSize() {
+        val camera = folders[0]
+        assertEquals(1000L, camera.bytes)
+        assertEquals(1000L, camera.bytes(photos = true, videos = true))
+        assertEquals(900L, camera.bytes(photos = true, videos = false))
+        assertEquals(100L, camera.bytes(photos = false, videos = true))
+        assertEquals(0L, camera.bytes(photos = false, videos = false))
+        // every folder, the SD card's too: 1511 bytes, 400 of them in videos
+        assertEquals(1511L, folders.sumOf { it.bytes })
+        assertEquals(1111L, folders.sumOf { it.bytes(photos = true, videos = false) })
+        assertEquals(400L, folders.sumOf { it.bytes(photos = false, videos = true) })
     }
 
     @Test fun visibleRowsFollowTheExpandedFolders() {

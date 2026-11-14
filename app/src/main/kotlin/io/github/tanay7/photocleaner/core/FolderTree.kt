@@ -1,8 +1,15 @@
 package io.github.tanay7.photocleaner.core
 
-/** A folder that directly holds photos or videos. [path] has no trailing slash; "" is the storage root. */
-class FolderInfo(val volume: String, val path: String, val photos: Int, val videos: Int, val bytes: Long) {
+/**
+ * A folder that directly holds photos or videos. [path] has no trailing slash; "" is the storage root.
+ * The sizes of its photos and of its videos are kept apart, for a scan of only one of the two.
+ */
+class FolderInfo(val volume: String, val path: String, val photos: Int, val videos: Int, val photoBytes: Long, val videoBytes: Long = 0) {
     val key: String get() = keyOf(volume, path)
+    val bytes: Long get() = photoBytes + videoBytes
+
+    /** The size of what a scan of this folder reads: its photos, its videos, or both. */
+    fun bytes(photos: Boolean, videos: Boolean): Long = (if (photos) photoBytes else 0L) + (if (videos) videoBytes else 0L)
 
     companion object {
         fun keyOf(volume: String, path: String) = "$volume:${path.trim('/')}"

@@ -146,7 +146,8 @@ object MediaIndex {
         class Acc(val volume: String, val path: String) {
             var photos = 0
             var videos = 0
-            var bytes = 0L
+            var photoBytes = 0L
+            var videoBytes = 0L
         }
         val map = LinkedHashMap<String, Acc>()
         val projection = arrayOf(MediaStore.MediaColumns.VOLUME_NAME, MediaStore.MediaColumns.RELATIVE_PATH, MediaStore.MediaColumns.SIZE)
@@ -167,12 +168,18 @@ object MediaIndex {
                             lastPath = path
                         }
                     }
-                    if (kind == MediaKind.PHOTO) a.photos++ else a.videos++
-                    if (!c.isNull(2)) a.bytes += c.getLong(2)
+                    val size = if (c.isNull(2)) 0L else c.getLong(2)
+                    if (kind == MediaKind.PHOTO) {
+                        a.photos++
+                        a.photoBytes += size
+                    } else {
+                        a.videos++
+                        a.videoBytes += size
+                    }
                 }
             }
         }
-        return map.values.map { FolderInfo(it.volume, it.path, it.photos, it.videos, it.bytes) }
+        return map.values.map { FolderInfo(it.volume, it.path, it.photos, it.videos, it.photoBytes, it.videoBytes) }
     }
 
     /** The storage volumes that are in the phone right now ("external_primary", an SD card's id). */

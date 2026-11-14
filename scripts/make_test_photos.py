@@ -33,8 +33,8 @@ the screens, mostly white, would also count as overexposed if screenshots were j
 Expected from a scan of everything: one look-alike group of 8 (the camera original kept with 4
 copies of it ticked, the brighter edit kept as well with its small copy ticked, the copy with the
 sticker kept as well), one of the panorama (its small copy ticked, the WebP of the same size left
-alone), one burst of 5 (a sharp frame kept, 4 ticked) and the dark shot listed on its own; the broken
-files are reported, and stop nothing.
+alone), one of the HEIC photo (its JPEG ticked), one burst of 5 (a sharp frame kept, 4 ticked) and
+the dark shot listed on its own; the broken files are reported, and stop nothing.
 """
 import os
 import random

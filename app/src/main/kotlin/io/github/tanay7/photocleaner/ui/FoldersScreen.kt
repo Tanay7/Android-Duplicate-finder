@@ -329,7 +329,7 @@ class FoldersScreen(act: MainActivity) : Screen(act) {
                 Fmt.plural(chosen.size, "folder", "folders"),
                 if (o.photos) Fmt.plural(photos, "photo", "photos") else null,
                 if (o.videos) Fmt.plural(videos, "video", "videos") else null,
-                Fmt.bytes(chosen.sumOf { it.bytes }),
+                Fmt.bytes(chosen.sumOf { it.bytes(o.photos, o.videos) }),
             ).joinToString(" · ") + "\n" + lookingFor(o)
         }
         scanButton.text = if (chosen.isEmpty()) "Scan" else "Scan ${Fmt.plural(chosen.size, "folder", "folders")}"
@@ -505,8 +505,8 @@ class FoldersScreen(act: MainActivity) : Screen(act) {
             }
             return row to sw
         }
-        val photos = switchRow("Photos", "Identical copies of photos", o.photos)
-        val videos = switchRow("Videos", "Identical copies of videos", o.videos)
+        val photos = switchRow("Photos", "Look in photos (off: no look-alikes, bursts or poor shots either)", o.photos)
+        val videos = switchRow("Videos", "Look in videos, for identical copies", o.videos)
         val similar = switchRow("Look-alike photos", "Resized, re-saved, turned or cropped copies. Edits are kept too: only their own copies are ticked", o.similar)
         val bursts = switchRow("Burst shots", "Near-identical shots a moment apart: keeps the sharpest", o.bursts)
         val poor = switchRow("Blurry and dark photos", "Camera photos only. Listed on their own, never ticked for you", o.poor)
@@ -565,15 +565,15 @@ class FoldersScreen(act: MainActivity) : Screen(act) {
             setTextColor(c.onSurfaceVariant)
             textSize = 14f
             text = """
-                Photo Cleaner finds identical copies, look-alike photos (resized, re-saved, turned or cropped), burst shots, and blurry or dark photos in the folders you choose. For each group it suggests the copy to keep: the largest and sharpest, an original from the camera over one saved from a chat. A favourite is never ticked, and among copies as large it is the one kept.
+                Photo Cleaner finds identical copies, look-alike photos (resized, re-saved, turned, mirrored or cropped), burst shots, and blurry or dark photos in the folders you choose. For each group it suggests the copy to keep: the one with the most pixels (in a burst, the sharpest shot), an original from the camera over one saved from a chat. A favourite is never ticked, and among copies as large it is the one kept.
 
-                It only ticks what it is sure of. An edit (other brightness or colours, a sticker or caption added, something removed), a crop, another shot of the same scene and a RAW file's JPEG twin are versions of their own: the best copy of each is kept, and only its own duplicates are ticked. A favourite, or a picture that merely has the same layout (two pages of text, two screens of an app), is never ticked for you, and what you untick stays unticked in later scans.
+                It only ticks what it is sure of. An edit (other brightness or colours, a sticker or caption added, something removed), a crop, a mirrored copy, another shot of the same scene and a RAW file's JPEG twin are versions of their own: the best copy of each is kept, and only its own duplicates are ticked. A favourite, or a picture that merely has the same layout (two pages of text, two screens of an app), is never ticked for you, and what you untick stays unticked in later scans.
 
-                It can't see a change that leaves every part of a picture as bright as it was, such as a small area blurred or retouched: look at what is ticked before you move it if you make edits like that.
+                It can't see a change that leaves the brightness and colour of every part of a picture as they were, such as a small area blurred or retouched: look at what is ticked before you move it if you make edits like that.
 
                 Nothing is deleted for good. Files you remove go to the phone's trash and stay there for 30 days: Undo brings them straight back, and so does the trash in the Files or Photos app.
 
-                Nothing leaves your phone. The app has no internet access. It remembers fingerprints of your photos in its own storage, so the next scan only reads new files.
+                Nothing leaves your phone. The app has no internet access. It remembers fingerprints of your photos in its own storage, so the next scan only reads new and changed files.
 
                 It reads your photos on every processor core, and keeps the phone awake while it scans.
 
