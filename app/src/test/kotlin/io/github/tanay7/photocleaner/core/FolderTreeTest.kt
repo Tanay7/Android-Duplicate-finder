@@ -131,6 +131,25 @@ class NamesTest {
         assertEquals("12 MB", Fmt.bytes(12_345_678, us))
         assertEquals("1.2 GB", Fmt.bytes(1_234_567_890, us))
         assertEquals("25 GB", Fmt.bytes(25_000_000_000, us))
+        // at the edges of the units: never "1000 KB" or "10.0 MB"
+        assertEquals("0 B", Fmt.bytes(0, us))
+        assertEquals("1.0 KB", Fmt.bytes(1000, us))
+        assertEquals("9.9 KB", Fmt.bytes(9_949, us))
+        assertEquals("10 KB", Fmt.bytes(9_950, us))
+        assertEquals("999 KB", Fmt.bytes(999_499, us))
+        assertEquals("1.0 MB", Fmt.bytes(999_500, us))
+        assertEquals("1.0 MB", Fmt.bytes(999_999, us))
+        assertEquals("1.0 MB", Fmt.bytes(1_000_000, us))
+        assertEquals("10 MB", Fmt.bytes(9_999_999, us))
+        assertEquals("1.0 GB", Fmt.bytes(999_999_999, us))
+        assertEquals("1.0 TB", Fmt.bytes(999_999_999_999, us))
+        assertEquals("1500 TB", Fmt.bytes(1_500_000_000_000_000, us))
+        assertEquals("1,5 KB", Fmt.bytes(1500, Locale.GERMANY))
+        for (b in listOf(1L, 999L, 1000L, 54_321L, 999_500L, 123_456_789L, 999_999_999L, 5_000_000_000_000L)) {
+            val shown = Fmt.bytes(b, us)
+            assertFalse(shown, shown.startsWith("1000 "))
+            assertFalse(shown, shown.startsWith("10.0 "))
+        }
         assertEquals("1,234", Fmt.count(1234, us))
         assertEquals("1 photo", Fmt.plural(1, "photo", "photos", us))
         assertEquals("2 photos", Fmt.plural(2, "photo", "photos", us))
@@ -203,6 +222,8 @@ class BudgetAndJournalTest {
         // unknown size: as 12 megapixels
         assertEquals(Parallelism.decodeBytes("image/jpeg", "a.jpg", 4000, 3000), Parallelism.decodeBytes("image/jpeg", "a.jpg", 0, 0))
         assertTrue(Parallelism.decodeBytes("image/png", "s.png", 1080, 2400) < 16 * mb)
+        // a GIF is decoded whole, then shrunk
+        assertEquals(4000L * 3000 * 4 + 12_000_000L / 4 * 4 + 4 * mb, Parallelism.decodeBytes("image/gif", "a.gif", 4000, 3000))
         // a PNG is reduced only half the way while it is read
         assertEquals(12_000_000L / 4 * 4 + 4 * mb, Parallelism.decodeBytes("image/png", "a.png", 4000, 3000))
     }

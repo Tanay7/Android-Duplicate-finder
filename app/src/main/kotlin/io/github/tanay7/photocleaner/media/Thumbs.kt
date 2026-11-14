@@ -61,7 +61,7 @@ object Thumbs {
      * of the way: sooner than the whole picture, and without the jagged detail of skipped pixels,
      * which matters when two copies are compared for sharpness.
      */
-    fun full(cr: ContentResolver, uri: Uri, maxSide: Int): Bitmap? = try {
+    fun full(cr: ContentResolver, uri: Uri, maxSide: Int): Bitmap? = if (maxSide < 1) null else try {
         var bmp = ImageDecoder.decodeBitmap(ImageDecoder.createSource(cr, uri)) { decoder, info, _ ->
             val long = max(info.size.width, info.size.height)
             var sample = 1

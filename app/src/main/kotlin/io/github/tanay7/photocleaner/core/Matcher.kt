@@ -24,7 +24,7 @@ class Item(
     /** Full-size pixels after rotation, 0 when unknown. */
     val width: Int,
     val height: Int,
-    /** Capture time from the photo's own EXIF data (seconds), or null. */
+    /** Capture time from the photo's own EXIF data (seconds, by the camera's own clock: see [ExifTime]), or null. */
     val takenAt: Double?,
     /** Camera make and model from EXIF, or null. */
     val camera: String?,
@@ -103,7 +103,7 @@ class Member(
     val item: Int,
     val keeper: Boolean,
     val relation: Relation,
-    /** 100 for identical copies, the visual score (0-100) for look-alikes. */
+    /** 100 for identical copies; for look-alikes, the share of the fine fingerprint that agrees (0-100); null for burst frames. */
     val score: Float?,
     /** "rotated", "mirrored" or "cropped" for a look-alike matched that way. */
     val how: String?,
@@ -114,7 +114,7 @@ class Member(
     val flags: Set<Flag>,
     /** In a burst: detail relative to the sharpest frame, in %. */
     val relSharpness: Float?,
-    /** Why it isn't pre-selected, when that isn't obvious. */
+    /** Why it isn't pre-selected, or why a second copy is kept, when that isn't obvious. */
     val note: String?,
     /** A frame of the group's burst (not a copy of one). */
     val frame: Boolean = false,
@@ -591,7 +591,7 @@ class Matcher(private val items: List<Item>, private val o: MatchOptions = Match
         return out
     }
 
-    /** Blurry or badly exposed photos that aren't in any group, worst first. Never pre-selected. */
+    /** Blurry or badly exposed photos that aren't in any group, the blurriest first. Never pre-selected. */
     private fun poorGroup(groups: List<Group>): Group? {
         val grouped = HashSet<Int>()
         for (g in groups) for (m in g.members) grouped.add(m.item)
@@ -686,7 +686,16 @@ class Matcher(private val items: List<Item>, private val o: MatchOptions = Match
                 failure.compareAndSet(null, t)
             }
         }
-        val helpers = (1 until threads).map { Thread(work, "match-$it").apply { isDaemon = true; start() } }
+        // A phone short of memory may refuse to start a thread: the work is shared out among those
+        // that did start (this one, at least), never left half done.
+        val helpers = ArrayList<Thread>(threads - 1)
+        for (t in 1 until threads) {
+            try {
+                helpers.add(Thread(work, "match-$t").apply { isDaemon = true; start() })
+            } catch (_: Throwable) {
+                break
+            }
+        }
         work.run()
         helpers.forEach { it.join() }
         failure.get()?.let { throw it }

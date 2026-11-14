@@ -22,8 +22,10 @@ import io.github.tanay7.photocleaner.core.Scratch
 import java.io.FileInputStream
 import java.io.IOException
 import java.security.MessageDigest
+import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.Callable
 import java.util.concurrent.CancellationException
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.max
@@ -64,8 +66,9 @@ object Analyzer {
 
     /**
      * Reads a photo, opening it once: its SHA-256 (streamed, never held in memory) and, if
-     * [wantFeatures], its EXIF capture time and camera and its pixels, decoded reduced to 960-1024 px
-     * (turned the way its EXIF data says, in sRGB) and measured. Failures come back in the
+     * [wantFeatures], its EXIF capture time and camera and its pixels, decoded at no more than
+     * 1024 px on the long side (960 to 1024 px for a larger photo; turned the way its EXIF data says,
+     * in sRGB) and measured. Failures come back in the
      * row's error, except running out of memory, which the scanner answers by trying the file again
      * on its own.
      */
@@ -132,10 +135,34 @@ object Analyzer {
 
     /**
      * True if Android gives this app the files' own bytes. Asked of a few files before a scan (with
-     * the permission it always should; this makes sure, so a whole scan never fails on it).
+     * the permission it always should; this makes sure, so a whole scan never fails on it). Files on
+     * the phone's own storage are asked first, and the answer is awaited for [PROBE_MS] at most: the
+     * scan has no watchdog yet, and a failing SD card can block an open for good. Without an answer,
+     * the copies Android hands out are read: they always work.
      */
     fun givesOriginals(cr: ContentResolver, items: List<MediaItem>): Boolean {
-        for (item in items.take(5)) {
+        if (items.isEmpty()) return true
+        val own = MediaStore.VOLUME_EXTERNAL_PRIMARY
+        val probe = (items.asSequence().filter { it.volume == own } + items.asSequence().filter { it.volume != own }).take(5).toList()
+        val answer = ArrayBlockingQueue<Boolean>(1)
+        try {
+            Thread({
+                answer.offer(
+                    try {
+                        opensOriginals(cr, probe)
+                    } catch (_: Throwable) {
+                        false
+                    },
+                )
+            }, "originals").apply { isDaemon = true }.start()
+        } catch (_: Throwable) {
+            return false
+        }
+        return answer.poll(PROBE_MS, TimeUnit.MILLISECONDS) ?: false
+    }
+
+    private fun opensOriginals(cr: ContentResolver, items: List<MediaItem>): Boolean {
+        for (item in items) {
             try {
                 cr.openFileDescriptor(MediaStore.setRequireOriginal(item.uri), "r")?.close() ?: continue
                 return true
@@ -147,8 +174,11 @@ object Analyzer {
                 // this file can't be opened at all: ask the next one
             }
         }
-        return items.isEmpty()
+        return false
     }
+
+    /** How long [givesOriginals] waits for its answer. */
+    const val PROBE_MS = 10_000L
 
     private fun open(rd: Reading, item: MediaItem): ParcelFileDescriptor =
         rd.cr.openFileDescriptor(if (rd.original) MediaStore.setRequireOriginal(item.uri) else item.uri, "r")

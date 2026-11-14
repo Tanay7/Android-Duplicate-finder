@@ -7,6 +7,7 @@ import android.os.storage.StorageManager
 import android.provider.MediaStore
 import io.github.tanay7.photocleaner.core.FolderInfo
 import io.github.tanay7.photocleaner.core.MediaKind
+import java.io.IOException
 
 /** A photo or video as the phone's media index (MediaStore) describes it. */
 class MediaItem(
@@ -115,22 +116,22 @@ object MediaIndex {
     /**
      * The keys of those [items] still on the phone (not deleted, not in the trash). Checked before
      * moving files and after Android answers, so the app never acts on, or reports, a file that has
-     * gone meanwhile. Files on a storage that can't be asked (an SD card taken out) count as gone.
+     * gone meanwhile. Files on a storage that isn't in the phone (an SD card taken out) count as
+     * gone. If a storage that is in the phone can't be asked, this throws rather than call its files
+     * gone: whoever asked then knows the answer is missing, not that the files are.
      */
     fun existing(ctx: Context, items: Collection<MediaItem>): Set<String> {
+        val mounted = MediaStore.getExternalVolumeNames(ctx)
         val out = HashSet<String>()
         for ((where, list) in items.groupBy { it.kind to it.volume }) {
-            try {
-                val uri = MediaItem.collection(where.first, where.second)
-                for (chunk in list.chunked(400)) {
-                    val byId = chunk.associateBy { it.id }
-                    val sel = "${MediaStore.MediaColumns._ID} IN (${chunk.joinToString(",") { it.id.toString() }})"
-                    ctx.contentResolver.query(uri, arrayOf(MediaStore.MediaColumns._ID), sel, null, null)?.use { c ->
-                        while (c.moveToNext()) byId[c.getLong(0)]?.let { out.add(it.key) }
-                    }
-                }
-            } catch (e: Exception) {
-                android.util.Log.w("PhotoCleaner", "Can't ask the storage ${where.second}", e)
+            if (where.second !in mounted) continue
+            val uri = MediaItem.collection(where.first, where.second)
+            for (chunk in list.chunked(400)) {
+                val byId = chunk.associateBy { it.id }
+                val sel = "${MediaStore.MediaColumns._ID} IN (${chunk.joinToString(",") { it.id.toString() }})"
+                val c = ctx.contentResolver.query(uri, arrayOf(MediaStore.MediaColumns._ID), sel, null, null)
+                    ?: throw IOException("The media index didn't answer for ${where.second}")
+                c.use { while (it.moveToNext()) byId[it.getLong(0)]?.let { m -> out.add(m.key) } }
             }
         }
         return out

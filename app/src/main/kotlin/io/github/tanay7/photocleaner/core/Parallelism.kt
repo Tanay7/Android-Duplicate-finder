@@ -7,12 +7,17 @@ import kotlin.concurrent.withLock
 import kotlin.math.max
 import kotlin.math.min
 
-/** How many threads a scan may run (Lean Reader's rule: one per core, as far as memory allows). */
+/**
+ * How a scan shares out the phone: how many threads it runs (Lean Reader's rule: one per core, as far
+ * as memory allows), how long a file may take, how many threads rest when the phone is hot, and how
+ * much a photo is reduced as it is decoded and how much memory that takes.
+ */
 object Parallelism {
     /**
-     * Native memory to have free for each reading thread: a decoder at work on an ordinary photo and
-     * its reduced picture take about 20 MB. (Decoders that need far more, for HEIC, AVIF and RAW
-     * files, share the scan's [Budget] on top of this rule.)
+     * Native memory to have free for each reading thread. By [decodeBytes], a 12-megapixel JPEG takes
+     * about 7 MB to decode reduced; the rest is a margin for the app's other memory and the system's.
+     * (Decoders that need far more, for HEIC, AVIF and RAW files, share the scan's [Budget] on top
+     * of this rule.)
      */
     const val NATIVE_PER_THREAD = 48L shl 20
     /** Java memory one reading thread needs: its reusable buffers (1024 px x 2 grey copies) and a read buffer. */
@@ -41,16 +46,17 @@ object Parallelism {
 
     /**
      * The reduction (1, 2, 4, 8 ...) to decode a photo at whose long side has [long] pixels: the
-     * largest power of two that leaves at least [ImageAnalysis.SMALLEST_REDUCED] of them.
+     * largest power of two that leaves at least [ImageAnalysis.SMALLEST_REDUCED] of them (1 for a
+     * smaller photo).
      *
      * A JPEG decoder reduces by 2, 4 or 8 as it decodes, for less work than the whole picture.
-     * Asked for any other size (1024 px of a 4000 px photo, a reduction by 3.9), Android decodes the
-     * picture whole and keeps every third pixel: two and a half times slower (libjpeg-turbo takes
-     * 49 ms for a 12-megapixel photo whole and 20 ms at a quarter, 209 and 83 ms for 50 megapixels
-     * at an eighth), and the skipped pixels leave jagged detail. So the decoder is asked for a power
-     * of two, and what comes out larger than [ImageAnalysis.REDUCED_SIZE] is reduced the rest of the
-     * way, smoothly. The phones' usual sizes (4000, 4032, 4080 and 8160 px) come out at 1000 to
-     * 1020 px with no second step.
+     * Asked for any other size (1024 px of a 4000 px photo, a reduction by 3.9), Android's decoder
+     * reads the whole picture, keeps every third pixel and scales the rest: slower (with Pillow's
+     * libjpeg-turbo on a desktop, a 12-megapixel photo took 49 ms whole and 20 ms at a quarter, a
+     * 50-megapixel one 209 ms whole and 83 ms at an eighth), and the skipped pixels leave jagged
+     * detail. So the decoder is asked for a power of two, and what comes out larger than
+     * [ImageAnalysis.REDUCED_SIZE] is reduced the rest of the way, smoothly. The phones' usual sizes
+     * (4000, 4032, 4080 and 8160 px) come out at 1000 to 1020 px with no second step.
      */
     fun sampleFor(long: Int): Int {
         var s = 1
@@ -59,10 +65,12 @@ object Parallelism {
     }
 
     /**
-     * The same for a file of type [mime]. JPEG and WebP decoders reduce with every pixel (in their
-     * transform, or by averaging). The others (PNG, HEIC, AVIF, GIF) reduce by skipping pixels, so
-     * they are asked for only half the reduction, and the last halving is done afterwards, averaging:
-     * a photo is measured as sharp as it is, whatever its format.
+     * The same for a file of type [mime]. JPEG and WebP decoders reduce with every pixel (in the
+     * JPEG transform, or libwebp's averaging scaler). The others don't: a PNG decoder keeps every
+     * n-th pixel, and HEIC and GIF pictures are decoded whole and shrunk by Android with a bilinear
+     * filter, which skips pixels when it shrinks by more than half (AVIF is decoded whole and shrunk
+     * by its own library). So they are asked for only half the reduction, and the last halving is
+     * done afterwards, averaging: a photo is measured as sharp as it is, whatever its format.
      */
     fun sampleFor(long: Int, mime: String?): Int {
         val s = sampleFor(long)
@@ -72,9 +80,10 @@ object Parallelism {
 
     /**
      * Roughly the memory (bytes) that decoding a [width] x [height] photo takes at its peak. JPEG, PNG
-     * and WebP are decoded reduced as they are read. HEIC and AVIF are decoded whole before they are
-     * reduced, and a RAW file is developed whole, in floating point: a 50-megapixel HEIC takes 300 MB,
-     * a RAW of that size over a gigabyte. Unknown sizes count as 12 megapixels.
+     * and WebP are decoded reduced as they are read. HEIC, AVIF and GIF are decoded whole before they
+     * are reduced, and a RAW file is developed whole (estimated at 24 bytes a pixel): by this estimate
+     * a 50-megapixel HEIC takes over 300 MB, a RAW of that size 1.2 GB. Unknown sizes count as 12
+     * megapixels.
      */
     fun decodeBytes(mime: String, name: String, width: Int, height: Int): Long {
         val known = width > 0 && height > 0
@@ -86,6 +95,7 @@ object Parallelism {
         return when {
             CopyNames.isRaw(name) || type.contains("raw") || type.endsWith("dng") -> px * 24
             type.endsWith("heic") || type.endsWith("heif") || type.endsWith("avif") -> px * 6 + reduced
+            type.endsWith("gif") -> px * 4 + reduced
             else -> reduced
         }
     }

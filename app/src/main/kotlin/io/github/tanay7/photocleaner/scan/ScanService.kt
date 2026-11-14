@@ -121,8 +121,9 @@ class ScanService : Service() {
     }
 
     /**
-     * Android allows work of this kind in the background for 6 hours a day: stop in order when that
-     * runs out (it must be within seconds), keeping what has been read.
+     * Android allows work of this kind in the background for 6 hours a day: when that runs out the
+     * service must stop within seconds, or Android ends the app. It stops at once; the scan thread
+     * stops at its next check, keeping what has been read, and hands its outcome back as usual.
      */
     override fun onTimeout(startId: Int, fgsType: Int) {
         current?.let {
@@ -133,7 +134,7 @@ class ScanService : Service() {
             stopForeground(STOP_FOREGROUND_REMOVE)
         } catch (_: Exception) {
         }
-        if (current == null) stopSelf()
+        stopSelf()
     }
 
     /** Called on the scan's threads. */

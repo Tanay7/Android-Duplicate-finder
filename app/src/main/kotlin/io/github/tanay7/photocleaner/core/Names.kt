@@ -50,16 +50,22 @@ object CopyNames {
 }
 
 object Fmt {
-    /** Sizes in powers of 1000, as Android's own Files app shows them. */
-    fun bytes(b: Long, locale: Locale = Locale.getDefault()): String = when {
-        b < 1000 -> "$b B"
-        b < 1_000_000 -> unit(b / 1e3, "KB", locale)
-        b < 1_000_000_000 -> unit(b / 1e6, "MB", locale)
-        else -> unit(b / 1e9, "GB", locale)
-    }
+    private val UNITS = arrayOf("KB", "MB", "GB", "TB")
 
-    private fun unit(v: Double, name: String, locale: Locale): String =
-        if (v < 10) String.format(locale, "%.1f %s", v, name) else String.format(locale, "%.0f %s", v, name)
+    /**
+     * Sizes in powers of 1000, as Android's own Files app shows them: one decimal under 10, none from
+     * 10 on. The unit is chosen after rounding, so 999,999 bytes are "1.0 MB", not "1000 KB".
+     */
+    fun bytes(b: Long, locale: Locale = Locale.getDefault()): String {
+        if (b < 1000) return "$b B"
+        var v = b / 1e3
+        var unit = 0
+        while (v >= 999.5 && unit < UNITS.size - 1) {
+            v /= 1e3
+            unit++
+        }
+        return String.format(locale, if (v < 9.95) "%.1f %s" else "%.0f %s", v, UNITS[unit])
+    }
 
     fun count(n: Int, locale: Locale = Locale.getDefault()): String = NumberFormat.getIntegerInstance(locale).format(n)
 

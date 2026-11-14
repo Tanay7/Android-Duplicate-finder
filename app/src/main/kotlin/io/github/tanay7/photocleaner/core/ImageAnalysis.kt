@@ -13,13 +13,15 @@ import kotlin.math.sqrt
 /**
  * What the matcher knows about one photo's pixels.
  *
- * Computed from the photo reduced to at most [ImageAnalysis.REDUCED_SIZE] px on its long side, with the
- * algorithms and cut-offs of DupeFinder, the desktop duplicate finder, so both tools judge photos alike.
+ * Computed from the photo reduced to at most [ImageAnalysis.REDUCED_SIZE] px on its long side. The
+ * perceptual hash with its variants, the sharpness, exposure and colour measures follow DupeFinder,
+ * the desktop duplicate finder (which resizes for the hash with a Lanczos filter, this app by area
+ * averaging); the fine fingerprint and the grid are this app's own.
  */
 class ImageFeatures(
     /** 64-bit perceptual hash (DCT of a 32x32 grey copy, 8x8 block against its median). */
     val phash: Long,
-    /** pHash of the same photo turned 90°, 180°, 270° and mirrored, in that order. */
+    /** pHash of the same photo turned 90°, 180° and 270° clockwise, and mirrored left to right, in that order. */
     val variants: LongArray,
     /** pHash of the centre square (wide or tall photos) or of the central 80 % (squarish ones). */
     val cropHash: Long,
@@ -52,8 +54,9 @@ class ImageFeatures(
      * What the picture looks like place by place: the mean brightness, then the mean of each of the
      * two colour channels, of every cell of a [ImageAnalysis.GRID] x [ImageAnalysis.GRID] grid (three
      * planes of bytes, row by row). The fingerprints above see the picture as a whole: a copy with a
-     * sticker or a caption added, a face blurred out or an object removed still passes them. It
-     * doesn't pass this: a re-saved or resized copy keeps every cell within a few levels.
+     * sticker, a caption or a date stamp added, or an object replaced, still passes them. It doesn't
+     * pass this, while a re-saved or resized copy keeps every cell within a few levels. (A change
+     * that keeps each cell's averages, such as a small area blurred or pixelated, passes this too.)
      *
      * Null for pictures under [ImageAnalysis.GRID] pixels a side. Large for something kept for every
      * photo, so it isn't held in memory once it is saved: whoever needs it then reads it back.
@@ -118,10 +121,12 @@ object ImageAnalysis {
     const val GRID_BYTES = 3 * GRID * GRID
     /**
      * Two pictures differ in part when a cell differs by this much in brightness or in colour, on top
-     * of what they differ by as a whole. Measured on generated photos reduced the way the app reduces
-     * them: re-saved and resized copies (JPEG quality 55 to 95, 800 px to full size, sharpened) stay
-     * within 3 and 2; a sticker 2.5 % of the width, a date stamp, a drawn circle or an object
-     * replaced give 6 or more in one of the two.
+     * of what they differ by as a whole. Measured on 32 generated photos reduced the way the app
+     * reduces them: 464 re-saved and resized copies, 400 to 4000 px on the long side (JPEG quality 55
+     * to 95, sharpened, saved twice), kept every cell within 2.98 of brightness and 2.18 of colour; a
+     * sticker 2.5 % of the width, a date stamp, a drawn circle or a replaced object took a cell past
+     * these limits in each of 12 photos (a thin line in 9 of 12; a small area blurred or pixelated in
+     * none).
      */
     const val LOCAL_LUMA = 6
     const val LOCAL_CHROMA = 5
@@ -129,9 +134,9 @@ object ImageAnalysis {
     /**
      * How much wider those limits are for a small picture, whose cells hold few pixels (and a quarter
      * as many colour samples), so that the edges of a resized copy fall differently in them. Measured
-     * on copies of 20 photos: with 400 px or more on the long side every cell stays within 1.1 in
-     * brightness and 2.1 in colour; at 240 px within 3 and 4, at 160 px 4 and 10, at 96 px 9 and 19.
-     * None for 400 px and more, then growing with the square of the reduction, to 8 times at most.
+     * on copies of 20 photos, the worst cell in brightness and in colour: 2.0 and 5.0 at 320 px on the
+     * long side, 3.0 and 4.0 at 240 px, 4.1 and 10.0 at 160 px, 9.0 and 18.9 at 96 px. None for
+     * 400 px and more, then growing with the square of the reduction, to 8 times at most.
      */
     fun cellSlack(longSide: Int): Double {
         if (longSide >= 400 || longSide <= 0) return 1.0
@@ -661,8 +666,9 @@ object Sharpness {
     /**
      * The 3 x 3 median: of the nine values, the middle one of (the largest of the columns' smallest,
      * the middle of their middles, the smallest of their largest). Every column of three is sorted
-     * once and used by the three windows it is in, with nothing but minima and maxima: a third of
-     * the time of the sliding histogram, and the same values.
+     * once and used by the three windows it is in, with nothing but minima and maxima: under a
+     * quarter of the time of the sliding histogram (4.6 ms against 20 for 1024 x 768 pixels, on the
+     * JVM), and the same values.
      */
     private fun median3(src: IntArray, w: Int, h: Int, out: IntArray): IntArray {
         for (y in 0 until h) {

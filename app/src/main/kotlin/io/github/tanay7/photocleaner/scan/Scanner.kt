@@ -33,6 +33,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicIntegerArray
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicLongArray
 import java.util.concurrent.atomic.AtomicReferenceArray
 
@@ -157,7 +158,7 @@ class Scanner(
                     features = r?.features,
                 )
             }
-            var lastTold = 0L
+            val lastTold = AtomicLong()      // told from several comparing threads
             val groups = Matcher(
                 coreItems,
                 MatchOptions(
@@ -166,8 +167,8 @@ class Scanner(
                     grid = ::gridOf,
                     progress = { done, total ->
                         val now = SystemClock.elapsedRealtime()
-                        if (now - lastTold > 200 || done == total) {
-                            lastTold = now
+                        val before = lastTold.get()
+                        if ((now - before > 200 && lastTold.compareAndSet(before, now)) || done == total) {
                             progress(Stage.COMPARING, done, total, cores)
                         }
                     },
@@ -210,7 +211,11 @@ class Scanner(
         return g
     }
 
-    /** Half of what the system can still give, for decoders to share; at least enough for one ordinary photo each. */
+    /**
+     * Half of what the system can still give, for decoders to share, and at least 256 MB, so that a
+     * phone short of memory still decodes several ordinary photos at once. (A need larger than the
+     * whole budget is met on its own: see [Budget].)
+     */
     private fun decodeBudget(): Long {
         val mi = ActivityManager.MemoryInfo()
         ctx.getSystemService(ActivityManager::class.java)?.getMemoryInfo(mi)
@@ -443,11 +448,12 @@ class Scanner(
                 }
                 if (received + givenUp >= n) break
                 if (alive.get() - stuck <= 0 && results.isEmpty()) {
-                    // No thread is left to read the rest: the storage has stopped answering.
+                    // No thread is left to read the rest: every one is held by a file that hangs (the
+                    // storage has stopped answering) or has ended.
                     var lost = 0
                     for (k in 0 until n) {
                         if (got[k] || given[k]) continue
-                        rows[todo[k]] = Analyzer.failed(items[todo[k]], reading, "Not read: the storage stopped answering")
+                        rows[todo[k]] = Analyzer.failed(items[todo[k]], reading, "Not read: no reading thread was left (the storage may have stopped answering)")
                         lost++
                     }
                     Log.w(TAG, "Gave up on $lost files: no thread left to read them")
