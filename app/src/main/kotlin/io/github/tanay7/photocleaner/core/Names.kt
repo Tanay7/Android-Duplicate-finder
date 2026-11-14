@@ -27,7 +27,7 @@ object CopyNames {
 
     /**
      * The kind of picture file, by its name: "jpeg", "heif", "png", "raw" ... Only files of one kind
-     * can be compared by their size: a HEIC photo is half the size of the JPEG made from it, and no
+     * can be compared by their size: a HEIC photo is a smaller file than the JPEG made from it, and no
      * worse.
      */
     fun format(path: String): String = when (val ext = path.substringAfterLast('/').substringAfterLast('.', "").lowercase(Locale.ROOT)) {
@@ -40,7 +40,8 @@ object CopyNames {
 
     /**
      * Folders where phones create originals: the camera (DCIM), screenshots and screen recordings.
-     * A copy there is kept before one that was saved, downloaded or shared elsewhere.
+     * Of copies alike otherwise, one there is kept before one that was saved, downloaded or shared
+     * elsewhere.
      */
     fun isOriginalFolder(path: String): Boolean {
         val parts = path.lowercase(Locale.ROOT).split('/').filter { it.isNotEmpty() }

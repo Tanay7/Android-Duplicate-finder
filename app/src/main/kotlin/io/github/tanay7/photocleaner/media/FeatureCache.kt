@@ -25,8 +25,9 @@ class FeatureRow(
     val error: String?,
     /**
      * Read from the file's own bytes (true), or from the copy Android hands out with the place a
-     * photo was taken blanked out (false: the app lacks the media-location permission). The two give
-     * different fingerprints for the same file, so they are never compared with each other.
+     * photo was taken blanked out (false: the app lacked the media-location permission, or Android
+     * didn't give the own bytes). The two give different fingerprints for the same file, so they are
+     * never compared with each other.
      */
     val original: Boolean = true,
 ) {

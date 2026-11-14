@@ -237,12 +237,15 @@ class ScanService : Service() {
             Stage.COMPARING -> if (total > 0) "Comparing: ${done * 100 / total}%" else "Comparing…"
         }
 
-        /** "Using all 8 cores", or how many and why fewer. */
+        /**
+         * "Using all 8 cores", or how many. (Fewer can be for little memory, heat, fewer files left
+         * than cores, or the files read again one at a time: no reason is guessed.)
+         */
         fun coresText(threads: Int): String {
             val cores = Runtime.getRuntime().availableProcessors()
             return when {
                 threads >= cores -> "Using all ${Fmt.count(cores)} cores"
-                else -> "Using ${Fmt.count(threads)} of ${Fmt.count(cores)} cores (memory or heat)"
+                else -> "Using ${Fmt.count(threads)} of ${Fmt.count(cores)} cores"
             }
         }
     }

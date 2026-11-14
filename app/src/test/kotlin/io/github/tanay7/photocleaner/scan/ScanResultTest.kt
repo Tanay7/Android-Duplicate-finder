@@ -105,4 +105,32 @@ class ScanResultTest {
         r2.tick(mapOf(2 to true, 4 to true))
         assertTrue(r2.everyCopyTicked(g))
     }
+
+    @Test fun filesGoToTheTrashAndBackInBatches() {
+        val items = (1..1201).toList()
+        val asked = ArrayList<List<Int>>()
+        var got: List<Int>? = null
+        // every batch allowed: all of them asked, in order, at most 500 at a time
+        inBatches(items, 500, { b, answer -> asked.add(b); answer(true) }) { got = it }
+        assertEquals(listOf(500, 500, 201), asked.map { it.size })
+        assertEquals(items, asked.flatten())
+        assertEquals(items, got)
+        // the second refused: the third isn't asked, and only the first counts as allowed
+        asked.clear()
+        inBatches(items, 500, { b, answer -> asked.add(b); answer(asked.size != 2) }) { got = it }
+        assertEquals(2, asked.size)
+        assertEquals(items.take(500), got)
+        // the first refused: nothing allowed
+        inBatches(items, 500, { _, answer -> answer(false) }) { got = it }
+        assertEquals(emptyList<Int>(), got)
+        // exactly one full batch; and nothing to ask, done at once
+        asked.clear()
+        inBatches((1..500).toList(), 500, { b, answer -> asked.add(b); answer(true) }) { got = it }
+        assertEquals(1, asked.size)
+        assertEquals(500, got!!.size)
+        var calls = 0
+        inBatches(emptyList<Int>(), 500, { _, _ -> calls++ }) { got = it }
+        assertEquals(0, calls)
+        assertEquals(emptyList<Int>(), got)
+    }
 }

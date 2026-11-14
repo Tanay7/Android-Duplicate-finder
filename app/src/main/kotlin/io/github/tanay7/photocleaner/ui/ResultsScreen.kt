@@ -29,6 +29,7 @@ import io.github.tanay7.photocleaner.core.Relation
 import io.github.tanay7.photocleaner.media.MediaIndex
 import io.github.tanay7.photocleaner.scan.Category
 import io.github.tanay7.photocleaner.scan.ScanResult
+import io.github.tanay7.photocleaner.scan.inBatches
 import kotlin.math.roundToInt
 
 /** Words for groups and their members, shared by the results, the grid and the viewer. */
@@ -206,7 +207,8 @@ class Tiles(private val act: MainActivity, private val r: ScanResult, val sizePx
 
 /**
  * The groups found: the copy to keep is marked, the extra copies are ticked for the trash. Ticked
- * files go to Android's trash with one confirmation, and Undo brings them back.
+ * files go to Android's trash with one confirmation for every [BATCH] of them, and Undo brings them
+ * back the same way.
  */
 class ResultsScreen(act: MainActivity, private val r: ScanResult) : Screen(act) {
     private var filter = Category.ALL
@@ -474,12 +476,15 @@ class ResultsScreen(act: MainActivity, private val r: ScanResult) : Screen(act) 
         )
     }
 
-    /** In batches: one confirmation can only carry so many files. */
+    /** In batches of [BATCH] (see [inBatches]), each with Android's own confirmation. */
     private fun trash(items: List<Int>) {
         busy = true
-        val chunks = items.chunked(BATCH)
-        val asked = ArrayList<Int>()
-        fun finish() {
+        inBatches(items, BATCH, { batch, answer -> act.requestTrash(batch.map { r.items[it].uri }, true, answer) }) { asked ->
+            if (asked.isEmpty()) {
+                busy = false
+                refresh()
+                return@inBatches
+            }
             // What Android really did: a file still listed wasn't moved, whatever the answer said.
             Bg.run({ MediaIndex.existing(ctx, asked.map { r.items[it] }) }) { present ->
                 busy = false
@@ -488,50 +493,50 @@ class ResultsScreen(act: MainActivity, private val r: ScanResult) : Screen(act) 
                 refresh()
             }
         }
-        fun next(k: Int) {
-            if (k == chunks.size) {
-                finish()
-                return
-            }
-            act.requestTrash(chunks[k].map { r.items[it].uri }, true) { ok ->
-                if (ok) {
-                    asked.addAll(chunks[k])
-                    next(k + 1)
-                } else {
-                    finish()
-                }
-            }
-        }
-        next(0)
     }
 
     private fun trashed(moved: List<Int>) {
         if (moved.isEmpty()) return
         r.trashed.addAll(moved)
         r.settle()
-        lastTrashed = moved
         act.mediaChanged = true
-        val bytes = moved.sumOf { r.items[it].size }
-        undoText.text = "${Fmt.plural(moved.size, "file", "files")} moved to the trash · ${Fmt.bytes(bytes)} freed"
+        offerUndo(moved)
+    }
+
+    /** Shows the Undo bar for [items] in the trash, or hides it when there are none. */
+    private fun offerUndo(items: List<Int>) {
+        lastTrashed = items
+        if (items.isEmpty()) {
+            undoBar.visibility = View.GONE
+            return
+        }
+        val bytes = items.sumOf { r.items[it].size }
+        undoText.text = "${Fmt.plural(items.size, "file", "files")} moved to the trash · ${Fmt.bytes(bytes)} freed"
         undoBar.visibility = View.VISIBLE
     }
 
+    /**
+     * Brings the last files moved back from the trash, in batches as they went. What isn't back (a
+     * batch was refused) can still be brought back with Undo.
+     */
     private fun undo() {
         val items = lastTrashed
         if (items.isEmpty() || busy) return
         busy = true
-        act.requestTrash(items.map { r.items[it].uri }, false) { ok ->
-            if (!ok) {
+        inBatches(items, BATCH, { batch, answer -> act.requestTrash(batch.map { r.items[it].uri }, false, answer) }) { asked ->
+            if (asked.isEmpty()) {
                 busy = false
-                return@requestTrash
+                return@inBatches
             }
+            // What Android really did: a file listed again is back, whatever the answer said.
             Bg.run({ MediaIndex.existing(ctx, items.map { r.items[it] }) }) { present ->
                 busy = false
-                val back = if (present == null) items else items.filter { r.items[it].key in present }
-                r.trashed.removeAll(back.toSet())
-                lastTrashed = emptyList()
+                val back = if (present == null) asked else items.filter { r.items[it].key in present }
+                if (back.isEmpty()) return@run
+                val backSet = back.toSet()
+                r.trashed.removeAll(backSet)
                 act.mediaChanged = true
-                undoBar.visibility = View.GONE
+                offerUndo(items.filter { it !in backSet })
                 refresh()
             }
         }

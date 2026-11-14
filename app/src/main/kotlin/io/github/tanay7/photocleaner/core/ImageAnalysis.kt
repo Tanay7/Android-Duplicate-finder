@@ -276,8 +276,9 @@ object ImageAnalysis {
     }
 
     /**
-     * True when picture a and picture b differ in part: in some cell of their grids, by more than
-     * they differ as a whole (the mean difference, which a slightly brighter re-save has everywhere).
+     * True when picture a and picture b differ in part: some cell of their grids differs by
+     * [LOCAL_LUMA] in brightness, or [LOCAL_CHROMA] in a colour channel, more or less than the two
+     * differ as a whole (the mean difference, which a slightly brighter re-save has everywhere).
      * [turn] says how b must be turned to lie like a: -1 as it is, 0 a quarter clockwise, 1 half,
      * 2 a quarter the other way (the order of [ImageFeatures.variants]). [slack] widens the limits
      * for small pictures ([cellSlack] of the smaller one's long side).

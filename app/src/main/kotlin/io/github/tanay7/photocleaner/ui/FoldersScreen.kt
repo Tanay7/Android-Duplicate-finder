@@ -571,7 +571,7 @@ class FoldersScreen(act: MainActivity) : Screen(act) {
 
                 It can't see a change that leaves the brightness and colour of every part of a picture as they were, such as a small area blurred or retouched: look at what is ticked before you move it if you make edits like that.
 
-                Nothing is deleted for good. Files you remove go to the phone's trash and stay there for 30 days: Undo brings them straight back, and so does the trash in the Files or Photos app.
+                Nothing is deleted for good. Files you remove go to the phone's trash and stay there for 30 days: Undo brings them back, and so does the trash in the Files or Photos app.
 
                 Nothing leaves your phone. The app has no internet access. It remembers fingerprints of your photos in its own storage, so the next scan only reads new and changed files.
 

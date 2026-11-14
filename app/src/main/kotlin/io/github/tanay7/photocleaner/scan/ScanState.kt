@@ -140,6 +140,32 @@ enum class Category(val label: String) {
     ALL("All"), IDENTICAL("Identical"), LOOKALIKE("Look-alike"), BURSTS("Bursts"), VIDEOS("Videos"), POOR("Blurry or dark")
 }
 
+/**
+ * Asks for [items] in batches of at most [size], one batch after the other, through [ask], which
+ * answers true when its batch was allowed. Stops at the first batch refused; [done] gets the items of
+ * the batches allowed before it. (Moving files to the trash and back: Android's question carries
+ * its list of files in one message between apps, and such a message has a size limit.)
+ */
+fun <T> inBatches(items: List<T>, size: Int, ask: (List<T>, (Boolean) -> Unit) -> Unit, done: (List<T>) -> Unit) {
+    val batches = items.chunked(size)
+    val allowed = ArrayList<T>(items.size)
+    fun next(k: Int) {
+        if (k == batches.size) {
+            done(allowed)
+            return
+        }
+        ask(batches[k]) { ok ->
+            if (ok) {
+                allowed.addAll(batches[k])
+                next(k + 1)
+            } else {
+                done(allowed)
+            }
+        }
+    }
+    next(0)
+}
+
 /** The one scan of the app, shared by the service that runs it and the screens that show it. */
 object ScanState {
     sealed interface Status
