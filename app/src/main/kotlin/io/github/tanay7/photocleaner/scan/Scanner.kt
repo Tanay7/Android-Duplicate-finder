@@ -38,6 +38,27 @@ import java.util.concurrent.atomic.AtomicLongArray
 import java.util.concurrent.atomic.AtomicReferenceArray
 
 /**
+ * What the matcher is told of a file: what the media index says of it ([m]), and what reading it
+ * found out ([r], null if it wasn't read). Sizes come from the decoded picture when it was decoded,
+ * turned the way it is shown.
+ */
+internal fun matcherItem(m: MediaItem, r: FeatureRow?) = Item(
+    kind = m.kind,
+    path = m.path,
+    size = m.size,
+    added = m.added,
+    favorite = m.favorite,
+    original = CopyNames.isOriginalFolder(m.folder),
+    raw = CopyNames.isRaw(m.name) || m.mime.contains("raw") || m.mime.endsWith("dng"),
+    sha = r?.sha,
+    width = r?.width?.takeIf { it > 0 } ?: m.shownWidth,
+    height = r?.height?.takeIf { it > 0 } ?: m.shownHeight,
+    takenAt = r?.takenAt,
+    camera = r?.camera,
+    features = r?.features,
+)
+
+/**
  * One scan of the chosen folders:
  *  1. list their photos and videos from the media index;
  *  2. read the photos the cache doesn't know yet (fingerprint, and pixels if look-alikes, bursts or
@@ -140,24 +161,7 @@ class Scanner(
             check()
 
             progress(Stage.COMPARING, 0, 0, cores)
-            val coreItems = items.mapIndexed { i, m ->
-                val r = rows[i]
-                Item(
-                    kind = m.kind,
-                    path = m.path,
-                    size = m.size,
-                    added = m.added,
-                    favorite = m.favorite,
-                    original = CopyNames.isOriginalFolder(m.folder),
-                    raw = CopyNames.isRaw(m.name) || m.mime.contains("raw") || m.mime.endsWith("dng"),
-                    sha = r?.sha,
-                    width = r?.width?.takeIf { it > 0 } ?: m.shownWidth,
-                    height = r?.height?.takeIf { it > 0 } ?: m.shownHeight,
-                    takenAt = r?.takenAt,
-                    camera = r?.camera,
-                    features = r?.features,
-                )
-            }
+            val coreItems = items.mapIndexed { i, m -> matcherItem(m, rows[i]) }
             val lastTold = AtomicLong()      // told from several comparing threads
             val groups = Matcher(
                 coreItems,
