@@ -129,6 +129,9 @@ scan() {
   done
   echo "${line#*RESULT }"
 }
+# The groups the latest scan logged: they follow its RESULT line. (The earlier releases' scans are
+# in the same log, so nothing is ever looked for in the whole of it.)
+lastgroups() { sleep 1; local at; at=$(grep -n ' RESULT ' logcat.txt | tail -1 | cut -d: -f1); tail -n +"${at:-1}" logcat.txt | grep ' GROUP '; }
 expect() {  # expect LINE NAME VALUE
   local got
   got=$(field "$1" "$2")
@@ -163,7 +166,8 @@ expect "$r" groups 1
 expect "$r" identical 1
 expect "$r" suggested 1
 sleep 2; shot 2-results-two-folders
-grep -q 'GROUP identical KEEP:Pictures/Copies/IMG_0001.jpg TRASH:Download/IMG_0001 (1).jpg' logcat.txt &&
+G=$(lastgroups)
+echo "$G" | grep -q 'GROUP identical KEEP:Pictures/Copies/IMG_0001.jpg TRASH:Download/IMG_0001 (1).jpg' &&
   ok "the copy with a copy name goes" || fail "wrong copy kept in Pictures/Copies + Download"
 
 expect "$r" original 1            # the files' own bytes, not copies with the location blanked out
@@ -174,13 +178,16 @@ expect "$r" photos 11
 expect "$r" groups 1
 expect "$r" bursts 1
 expect "$r" suggested 4
-if grep 'GROUP bursts' logcat.txt | tail -1 | grep -q 'KEEP:DCIM/Camera/BURST_03.jpg'; then
+G=$(lastgroups)
+if ! echo "$G" | grep -q 'GROUP bursts .*BURST_0'; then
+  fail "no burst of the BURST_ shots was logged"
+elif echo "$G" | grep 'GROUP bursts' | grep -q 'KEEP:DCIM/Camera/BURST_03.jpg'; then
   fail "the blurred burst frame was kept"
 else
   ok "a sharp burst frame is kept"
 fi
 # five pages of a document, photographed two seconds apart: alike in layout only
-if grep ' GROUP ' logcat.txt | grep -q 'DOC_0'; then
+if echo "$G" | grep -q 'DOC_0'; then
   fail "pages of a document were taken for a burst or for look-alikes"
 else
   ok "pages photographed one after the other are not a burst"
@@ -188,8 +195,8 @@ fi
 
 echo "== everything is ticked"
 r=$(scan '*'); echo "$r"
-sleep 1   # the lines for each group follow the result
-group() { grep ' GROUP lookalike ' logcat.txt | grep "$1" | tail -1; }   # the latest look-alike group with that file
+G=$(lastgroups)
+group() { echo "$G" | grep ' GROUP lookalike ' | grep "$1" | tail -1; }   # this scan's look-alike group with that file
 # The HEIC photo and the JPEG made from it (only where the test photos include them, and this
 # Android can decode HEIC: otherwise the HEIC is one more file reported as not decodable).
 HEIC=0; HEICPAIR=0
@@ -242,13 +249,12 @@ group panorama | grep -q 'TRASH:Pictures/Big/panorama_small.jpg' &&
 # ... and its twin in another format, as large, is not judged by its size
 group panorama | grep -q 'TRASH:Pictures/Big/panorama.jpg\|TRASH:Pictures/Big/panorama.webp' &&
   fail "of the same photo in two formats, one was ticked" || ok "the same photo in two formats: neither is ticked"
-last=$(grep -n ' RESULT ' logcat.txt | tail -1 | cut -d: -f1)
-if tail -n +"$last" logcat.txt | grep ' GROUP ' | grep -qE 'DOC_0|settings_'; then
+if echo "$G" | grep -qE 'DOC_0|settings_'; then
   fail "different pages or screens were grouped"
 else
   ok "different pages and screens with the same layout are not grouped"
 fi
-if tail -n +"$last" logcat.txt | grep ' GROUP poor ' | grep -q 'settings_'; then
+if echo "$G" | grep ' GROUP poor ' | grep -q 'settings_'; then
   fail "a white screenshot was listed as badly exposed"
 else
   ok "screenshots are not judged as photos"
@@ -359,8 +365,10 @@ adb shell settings put system user_rotation 1; sleep 3; shot 11-landscape
 adb shell settings put system user_rotation 0; sleep 2
 
 # -- random GUI exploration, also in the dark theme with large text and on a small screen ---------
-start() { adb shell am start -W -n $PKG/.MainActivity >/dev/null; sleep "${1:-3}"; }
+# (monkey can leave the notification shade pulled down over the app: it is closed first)
+start() { adb shell cmd statusbar collapse >/dev/null 2>&1; adb shell am start -W -n $PKG/.MainActivity >/dev/null; sleep "${1:-3}"; }
 looks() {  # looks NAME: the folder list's Scan button and its options button are on screen
+  adb shell cmd statusbar collapse >/dev/null 2>&1; sleep 1
   if python3 "$HERE/ui.py" '^Scan' >/dev/null && python3 "$HERE/ui.py" 'What to look for' >/dev/null; then
     ok "$1: the folder list and its Scan button are shown"
   else
