@@ -346,13 +346,15 @@ class Matcher(private val items: List<Item>, private val o: MatchOptions = Match
     private fun space(g: Group): Long = g.members.filter { it.suggestTrash }.sumOf { items[it.item].size }
 
     private fun makeGroup(fids: List<Int>): Group {
-        val keeper = chooseKeeper(fids)
-        // The versions of the picture, and the best copy of each: the best copy overall for its own
-        // version (number 0), then the others by name.
+        // The versions of the picture, and the best copy of each, chosen among that version's own
+        // files only: what else the group holds (linked more loosely, or another version) never
+        // changes which copy of a version is kept. The best of those is the group's copy to keep
+        // (version 0); the others follow by name.
         val byVersion = LinkedHashMap<Int, ArrayList<Int>>()
         for (f in fids) byVersion.getOrPut(same.find(f)) { ArrayList() }.add(f)
-        val versions = byVersion.values.map { v -> (if (keeper in v) keeper else chooseKeeper(v)) to v }
-            .sortedWith(compareBy({ it.first != keeper }, { items[it.first].path }))
+        val best = byVersion.values.map { v -> chooseKeeper(v) to v }
+        val keeper = chooseKeeper(best.map { it.first })
+        val versions = best.sortedWith(compareBy({ it.first != keeper }, { items[it.first].path }))
         val keeperOf = HashMap<Int, Int>()
         val versionOf = HashMap<Int, Int>()
         versions.forEachIndexed { idx, (k, v) ->

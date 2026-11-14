@@ -361,6 +361,51 @@ class MatcherTest {
         assertTrue(match(both).single().members.none { it.suggestTrash })
     }
 
+    @Test fun aVersionsKeptCopyDependsOnItsOwnFilesOnly() {
+        val h = far()
+        // two JPEGs of one picture as large: the bigger file is kept, wherever the other one is
+        val camera = photo("DCIM/Camera/a.jpg", feat(h), size = 3_000_000)
+        val saved = photo("Pictures/a_saved.jpg", feat(h), size = 5_000_000)
+        assertEquals(listOf(1), match(listOf(camera, saved)).single().members.filter { it.keeper }.map { it.item })
+        // a HEIC of the same picture, linked loosely only (10 bits): another format in the group must
+        // not make the camera's JPEG the copy to keep, ticking the bigger one in its place
+        val heic = photo("Pictures/a.heic", feat(flip(h, 10)), size = 2_000_000)
+        val loose = match(listOf(camera, saved, heic), MatchOptions(maxBits = 12, poor = false)).single()
+        assertTrue(loose.members.single { it.item == 1 }.keeper)
+        assertTrue(loose.members.single { it.item == 0 }.suggestTrash)
+        assertFalse(loose.members.single { it.item == 2 }.suggestTrash)
+    }
+
+    @Test fun looseNeverTicksWhatNormalKeeps() {
+        // Random sets of photos: pictures with copies, edits, turned and cropped versions, other
+        // formats, favourites, linked tightly or loosely. Whatever Loose ticks, Normal ticks too.
+        for (seed in 1..60) {
+            val rnd = Random(seed)
+            val items = ArrayList<Item>()
+            repeat(1 + rnd.nextInt(4)) { pic ->
+                val h = rnd.nextLong()
+                repeat(2 + rnd.nextInt(5)) { c ->
+                    val bits = listOf(0, 0, 2, 5, 9, 11)[rnd.nextInt(6)]
+                    val fine = fineBits(listOf(0, 3, 20, 40)[rnd.nextInt(4)])
+                    val ext = listOf("jpg", "jpg", "heic", "png")[rnd.nextInt(4)]
+                    val folder = listOf("DCIM/Camera", "Pictures", "Download", "Pictures/Screenshots")[rnd.nextInt(4)]
+                    val px = listOf(4000 to 3000, 4000 to 3000, 2000 to 1500)[rnd.nextInt(3)]
+                    items.add(photo(
+                        "$folder/p${pic}_$c.$ext",
+                        feat(flip(h, bits), fine = fine, mean = 120f + listOf(0f, 0f, 12f)[rnd.nextInt(3)]),
+                        size = 500_000L + rnd.nextInt(5_000_000), w = px.first, h = px.second,
+                        favorite = rnd.nextInt(8) == 0,
+                    ))
+                }
+            }
+            fun ticked(bits: Int) = match(items, MatchOptions(maxBits = bits, poor = false))
+                .flatMap { g -> g.members.filter { it.suggestTrash }.map { it.item } }.toSet()
+            val normal = ticked(8)
+            val loose = ticked(12)
+            assertTrue("seed $seed: loose ticks ${loose - normal} that normal doesn't", normal.containsAll(loose))
+        }
+    }
+
     @Test fun aBurstSavedAsRawAndJpegKeepsTheSharpestOfEach() {
         val h = far()
         val detail = listOf(60f, 120f, 90f)
