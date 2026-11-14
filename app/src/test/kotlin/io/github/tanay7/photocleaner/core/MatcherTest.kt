@@ -617,6 +617,143 @@ class MatcherTest {
         assertTrue(m.note!!.contains("Part of the picture"))
     }
 
+    @Test fun editLimitsAtTheirEdges() {
+        val h = far()
+        fun second(a: ImageFeatures, b: ImageFeatures) =
+            match(listOf(photo("DCIM/Camera/a.jpg", a, size = 4_000_000), photo("Pictures/b.jpg", b, size = 3_000_000)))
+                .single().members.single { it.item == 1 }
+        fun resave(a: ImageFeatures, b: ImageFeatures) = second(a, b).let { it.suggestTrash && !it.edited }
+        fun edit(a: ImageFeatures, b: ImageFeatures) = second(a, b).let { it.edited && it.keeper && !it.suggestTrash }
+        // brightness: up to 8 levels is a re-save
+        assertTrue(resave(feat(h), feat(h, mean = 128f)))
+        assertTrue(edit(feat(h), feat(h, mean = 128.5f)))
+        assertTrue(edit(feat(h), feat(h, mean = 111.5f)))
+        // contrast: up to 1.15 times the other's, plus 1
+        assertTrue(resave(feat(h), feat(h, contrast = 58.5f)))
+        assertTrue(edit(feat(h), feat(h, contrast = 58.6f)))
+        assertTrue(resave(feat(h, contrast = 0f), feat(h, contrast = 1f)))
+        // colourfulness: more than 3 apart and more than 15 % of the larger
+        assertTrue(resave(feat(h, sat = 20f), feat(h, sat = 23f)))           // 3 <= max(3, 3.45)
+        assertTrue(edit(feat(h, sat = 20f), feat(h, sat = 24f)))             // 4 > max(3, 3.6)
+        assertTrue(resave(feat(h, sat = 2f), feat(h, sat = 5f)))
+        assertTrue(edit(feat(h, sat = 2f), feat(h, sat = 5.5f)))
+        // average colour: more than 5 apart in all
+        assertTrue(resave(feat(h), feat(h, cb = 130f, cr = 125f)))
+        assertTrue(edit(feat(h), feat(h, cb = 130f, cr = 124.5f)))
+    }
+
+    @Test fun colourLimitAtItsEdge() {
+        val h = far()
+        fun linked(a: ImageFeatures, b: ImageFeatures) = match(listOf(photo("a.jpg", a), photo("b.jpg", b))).isNotEmpty()
+        assertTrue(linked(feat(h, sat = 10f, cb = 100f), feat(h, sat = 10f, cb = 128f)))       // 28 apart
+        assertFalse(linked(feat(h, sat = 10f, cb = 100f), feat(h, sat = 10f, cb = 128.5f)))
+        assertTrue(linked(feat(h, sat = 10f, cb = 100f, cr = 140f), feat(h, sat = 10f, cb = 110f, cr = 122f)))   // 10 + 18
+        // nearly colourless (under 6) passes whatever its colour: a black-and-white copy
+        assertTrue(linked(feat(h, sat = 5.9f, cb = 100f), feat(h, sat = 10f, cb = 140f)))
+        assertFalse(linked(feat(h, sat = 6f, cb = 100f), feat(h, sat = 10f, cb = 140f)))
+    }
+
+    @Test fun burstLimitsAtTheirEdges() {
+        val h = far()
+        fun burst(gap: Double, bits: Int, fine: Int) = match(listOf(
+            photo("DCIM/Camera/a.jpg", feat(h), taken = 100.0, camera = "X"),
+            photo("DCIM/Camera/b.jpg", feat(h xor ((1L shl bits) - 1), fine = fineBits(fine)), taken = 100.0 + gap, camera = "X"),
+        )).singleOrNull()?.type == GroupType.BURST
+        assertTrue(burst(3.0, 10, 0))
+        assertFalse(burst(3.001, 10, 0))
+        assertTrue(burst(0.5, 16, 0))
+        assertFalse(burst(0.5, 17, 0))
+        assertTrue(burst(0.5, 10, 56))
+        assertFalse(burst(0.5, 10, 57))
+        // a longer gap is allowed when asked for
+        val far = listOf(
+            photo("DCIM/Camera/a.jpg", feat(h), taken = 100.0, camera = "X"),
+            photo("DCIM/Camera/b.jpg", feat(h xor 0x3FFL), taken = 104.0, camera = "X"),
+        )
+        assertTrue(match(far).isEmpty())
+        assertEquals(GroupType.BURST, match(far, MatchOptions(poor = false, burstGap = 5.0)).single().type)
+    }
+
+    @Test fun everyThreadCountFindsTheSameGroups() {
+        val r = Random(11)
+        for (n in listOf(2, 3, 255, 256, 257, 700)) {
+            val items = ArrayList<Item>()
+            repeat(n) { items.add(photo("Pictures/p$it.jpg", feat(r.nextLong(), variants = longArrayOf(r.nextLong(), r.nextLong(), r.nextLong(), r.nextLong()), crop = r.nextLong()))) }
+            // plant copies, a turned copy and a crop among them
+            val src = items[0].features!!
+            items[n - 1] = photo("Download/copy.jpg", feat(flip(src.phash, 3)), w = 1000, h = 750)
+            if (n > 2) items[1] = photo("Download/turned.jpg", feat(src.variants[0], fine = ImageAnalysis.fineVariant(src.fine, 0)), w = 3000, h = 4000)
+            val one = match(items, MatchOptions(poor = false, threads = 1)).map { g -> g.members.map { it.item to it.suggestTrash }.toSet() }.toSet()
+            assertTrue("n=$n", one.isNotEmpty())
+            for (threads in listOf(2, 3, 8, 64)) {
+                val many = match(items, MatchOptions(poor = false, threads = threads)).map { g -> g.members.map { it.item to it.suggestTrash }.toSet() }.toSet()
+                assertEquals("n=$n threads=$threads", one, many)
+            }
+        }
+    }
+
+    @Test fun everyCombinationOfOptionsKeepsTheRules() {
+        // real pictures: copies, an edit, a turned copy, a burst, identical files, RAW and JPEG, a favourite, a poor shot
+        val base = Scenes.scene(91, 800, 600)
+        val other = Scenes.scene(92, 800, 600)
+        val frames = (0 until 3).map { Scenes.noise(Scenes.shift(Scenes.scene(93, 800, 600), it * 4), 2.0, it) }
+        val items = listOf(
+            photo("DCIM/Camera/a.jpg", base.features(), size = 4_000_000, w = 800, h = 600, sha = "a"),
+            photo("Download/a (1).jpg", base.features(), size = 4_000_000, w = 800, h = 600, sha = "a"),
+            photo("Pictures/WhatsApp/a.jpg", Scenes.resize(base, 400, 300).features(), size = 200_000, w = 400, h = 300),
+            photo("Pictures/turned.jpg", Scenes.rotate90(Scenes.resize(base, 400, 300)).features(), size = 200_000, w = 300, h = 400),
+            photo("Pictures/Edited/a_bright.jpg", Scenes.scale(base, 1.2).features(), size = 3_000_000, w = 800, h = 600),
+            photo("Pictures/fav.jpg", Scenes.resize(base, 600, 450).features(), size = 900_000, w = 600, h = 450, favorite = true),
+            photo("DCIM/Camera/a.dng", base.features(), size = 20_000_000, w = 800, h = 600),
+            photo("Pictures/other.jpg", other.features(), size = 2_000_000, w = 800, h = 600),
+            photo("DCIM/Camera/dark.jpg", Scenes.scale(other, 0.1).features(), size = 1_000_000, w = 800, h = 600, taken = 5.0, camera = "X"),
+        ) + frames.mapIndexed { k, p -> photo("DCIM/Camera/B_$k.jpg", p.features(), size = 3_000_000, w = 800, h = 600, taken = 100.0 + k, camera = "X") }
+        val ticked = HashMap<String, Set<Int>>()
+        for (similar in listOf(true, false)) for (bursts in listOf(true, false)) for (poor in listOf(true, false)) {
+            for (bits in listOf(4, 8, 12)) {
+                val runs = listOf(1, 4).map { threads ->
+                    match(items, MatchOptions(similar = similar, bursts = bursts, poor = poor, maxBits = bits, threads = threads))
+                }
+                val name = "similar=$similar bursts=$bursts poor=$poor bits=$bits"
+                fun summary(gs: List<Group>) = gs.map { g -> g.type to g.members.map { Triple(it.item, it.keeper, it.suggestTrash) }.toSet() }.toSet()
+                assertEquals(name, summary(runs[0]), summary(runs[1]))
+                val groups = runs[0]
+                val seen = HashSet<Int>()
+                for (g in groups) {
+                    for (m in g.members) assertTrue("$name: item ${m.item} twice", seen.add(m.item))
+                    if (g.type == GroupType.POOR) {
+                        assertTrue(name, poor)
+                        assertTrue(name, g.members.none { it.suggestTrash || it.keeper })
+                        continue
+                    }
+                    for ((v, ms) in g.members.groupBy { it.version }) assertEquals("$name version $v", 1, ms.count { it.keeper })
+                    for (m in g.members) {
+                        if (m.keeper) assertFalse(name, m.suggestTrash)
+                        if (m.suggestTrash) assertFalse("$name: a favourite ticked", items[m.item].favorite)
+                        if (m.suggestTrash && m.relation != Relation.IDENTICAL) assertEquals("$name: RAW ticked against JPEG", items[g.members.single { it.keeper && it.version == m.version }.item].raw, items[m.item].raw)
+                    }
+                    if (!bursts) {
+                        assertTrue(name, g.type != GroupType.BURST)
+                        assertTrue(name, g.members.none { it.frame })
+                    }
+                    if (!similar) assertTrue(name, g.members.none { it.relation == Relation.LOOKALIKE && !it.frame && g.type != GroupType.BURST })
+                }
+                if (!poor) assertTrue(name, groups.none { it.type == GroupType.POOR })
+                // the identical pair is found whatever is asked for
+                assertTrue(name, groups.any { g -> g.members.map { it.item }.containsAll(listOf(0, 1)) })
+                ticked["$similar $bursts $poor $bits"] = groups.flatMap { g -> g.members.filter { it.suggestTrash }.map { it.item } }.toSet()
+            }
+        }
+        for (similar in listOf(true, false)) for (bursts in listOf(true, false)) for (poor in listOf(true, false)) {
+            val normal = ticked.getValue("$similar $bursts $poor 8")
+            assertTrue("loose ticks more: $similar $bursts $poor", normal.containsAll(ticked.getValue("$similar $bursts $poor 12")))
+        }
+        // with everything on: the copies go, the edit, the RAW file and the favourite stay
+        val all = ticked.getValue("true true true 8")
+        assertTrue(all.containsAll(listOf(1, 2, 3)))
+        assertTrue(all.none { it in listOf(0, 4, 5, 6, 7, 8) })
+    }
+
     @Test fun comparingCanBeStoppedAndTellsHowFarItIs() {
         val r = Random(3)
         val items = (0 until 600).map { photo("Pictures/p$it.jpg", feat(r.nextLong())) }
