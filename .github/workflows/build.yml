@@ -17,6 +17,11 @@ jobs:
         with:
           distribution: temurin
           java-version: 21
+      - name: Static analysis of the scripts (shellcheck; Python compiles)
+        run: |
+          command -v shellcheck >/dev/null || sudo apt-get install -y -qq shellcheck
+          shellcheck scripts/*.sh
+          python3 -m py_compile scripts/*.py
       - name: Unit tests, lint, the minified release APK and a test build
         run: ./gradlew --no-daemon testDebugUnitTest lintDebug assembleRelease assembleDebug
       - name: Test report (failures in full)
@@ -26,7 +31,7 @@ jobs:
       - name: Lint findings (errors in full, warning count)
         if: always()
         run: |
-          f=app/build/reports/lint.txt
+          f=app/build/reports/lint-results-debug.txt
           [ -f $f ] || exit 0
           grep -E ": Error: " $f || echo "no lint errors"
           echo "warnings: $(grep -cE ': Warning: ' $f)"; grep -E ': Warning: ' $f | sed -E 's/.*\[(\w+)\]$/\1/' | sort | uniq -c | sort -rn
@@ -66,6 +71,17 @@ jobs:
           git fetch -q origin "$GITHUB_REF_NAME"
           git diff --quiet "$GITHUB_SHA" FETCH_HEAD -- . ':(exclude)release' ':(exclude)docs' ':(exclude)*.md' || { echo "Newer code is on the branch; its build tests it"; exit 1; }
           mkdir -p apk && git show FETCH_HEAD:release/PhotoCleaner.apk > apk/app-release.apk && ls -l apk
+      - name: Earlier releases, to update from (fingerprint caches of versions 1, 2, 3 and the latest)
+        run: |
+          mkdir -p earlier
+          n=0
+          for c in 14cc53ab5276743f7fb3bc30d533e54a3279e077 28f7ca3409d382f78661f326dcbc4c1660cf66a3 a47ed8fa555f7170bbd891570917e3fa6c14ca91; do
+            n=$((n + 1))
+            git fetch -q --depth=1 origin "$c" && git show "$c:release/PhotoCleaner.apk" > "earlier/$n-${c:0:7}.apk" || { echo "release $c is gone: skipped"; rm -f "earlier/$n-${c:0:7}.apk"; }
+          done
+          # the last APK published before this build: what the people who update have now
+          [ -f release/PhotoCleaner.apk ] && cp release/PhotoCleaner.apk earlier/9-latest.apk
+          ls -l earlier
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -101,7 +117,7 @@ jobs:
           disk-size: 6144M
           emulator-boot-timeout: 1500
           emulator-options: -no-window -no-snapshot -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
-          script: bash scripts/device-test.sh apk/app-release.apk testdata apk/app-debug.apk
+          script: bash scripts/device-test.sh apk/app-release.apk testdata apk/app-debug.apk earlier/*.apk
       - name: Publish screenshots to docs/screenshots (Android 16 run, when every check passed)
         if: success() && matrix.api == 36
         run: |

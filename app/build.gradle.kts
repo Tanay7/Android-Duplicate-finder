@@ -35,9 +35,7 @@ android {
     }
     lint {
         checkReleaseBuilds = false
-        abortOnError = false
-        textReport = true
-        textOutput = file("build/reports/lint.txt")
+        abortOnError = false // CI prints the findings (build/reports/lint-results-debug.txt)
         disable += "SetTextI18n" // the app is English-only and builds its texts from counts
     }
     packaging { resources.excludes += listOf("kotlin/**", "META-INF/*.kotlin_module", "META-INF/*.version", "DebugProbesKt.bin") }

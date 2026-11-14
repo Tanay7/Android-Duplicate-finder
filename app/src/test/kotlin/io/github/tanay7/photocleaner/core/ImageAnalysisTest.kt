@@ -135,7 +135,7 @@ class ImageAnalysisTest {
     }
 
     @Test fun transparentPixelsAreSeenOverWhite() {
-        val px = IntArray(100 * 100) { 0x00000000 }
+        val px = IntArray(100 * 100)      // every pixel 0x00000000: black, and fully transparent
         val feats = ImageAnalysis.analyze(px, 100, 100)
         assertEquals(255f, feats.median, 0f)
     }

@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # On-device test, run by CI inside an Android emulator:
-#   device-test.sh APK TESTDATA [DEBUG_APK]      (TESTDATA from scripts/make_test_photos.py)
-#   1. install the APK; copy the test photos to the phone, plus a screen recording and a copy of it
+#   device-test.sh APK TESTDATA [DEBUG_APK [EARLIER_APK ...]]   (TESTDATA from scripts/make_test_photos.py)
+#   1. install the APK; copy the test photos to the phone, plus a screen recording and a copy of it.
+#      With EARLIER_APKs (releases from before, oldest first): install those first, one over the
+#      other, each scanning everything once, then the APK over the last one, so that it starts from
+#      what they left (fingerprint caches of older versions, which it must rebuild, and settings)
 #   2. scan chosen folders (the app's test extras) and check the groups it logs: only the ticked
 #      folders may be searched
 #   3. through the real buttons and the system's own dialog: move the ticked files to the trash,
@@ -9,12 +12,17 @@
 #   4. Android closing the app while its results are open: they must come back
 #   5. with DEBUG_APK (a test build that dies on purpose while reading one photo, as a crashing
 #      decoder would): the photo must be left out by the third scan, and that scan must finish
-#   6. GUI exploration with monkey (15,000 events), including rotation
-# Fails if a check fails, or the app crashes or stops responding (ANR) at any point.
+#   6. GUI exploration with monkey (15,000 events), including rotation, also in the dark theme with
+#      large text and on a small screen
+# Fails if a check fails, or the app under test crashes or stops responding (ANR) at any point. (A
+# crash of an earlier release is reported, but it isn't this build's.)
+# shellcheck disable=SC2015  # "check && ok ... || fail ...": ok only prints, so it never fails
 set -u
 APK=$1
 DATA=$2
 DEBUG_APK=${3:-}
+EARLIER=()
+for f in "${@:4}"; do [ -s "$f" ] && EARLIER+=("$f"); done
 PKG=io.github.tanay7.photocleaner
 HERE=$(cd "$(dirname "$0")" && pwd)
 FAILS=0
@@ -25,12 +33,20 @@ adb wait-for-device
 echo "SDK $(adb shell getprop ro.build.version.sdk | tr -d '\r'), ABIs $(adb shell getprop ro.product.cpu.abilist | tr -d '\r')"
 # right after boot the package manager can report "not enough space" until storage settles: retry
 for i in $(seq 1 30); do
-  out=$(adb install -r "$APK" 2>&1) && { echo "$out" | tail -1; break; }
+  first=${EARLIER[0]:-$APK}
+  out=$(adb install -r "$first" 2>&1) && { echo "$(basename "$first"): $(echo "$out" | tail -1)"; break; }
   echo "install attempt $i: $(echo "$out" | grep -m1 -oE 'not enough space|Exception[^:]*|Failure[^ ]*' || echo "$out" | tail -1)"
+  if [ ${#EARLIER[@]} -gt 0 ] && ! echo "$out" | grep -q 'not enough space'; then
+    echo "($(basename "$first") doesn't install here: the update test starts from the next one)"
+    EARLIER=("${EARLIER[@]:1}")
+    continue
+  fi
   [ "$i" = 30 ] && { echo "FAIL: APK did not install"; echo "$out" | tail -20; exit 1; }
   sleep 5
 done
-for p in READ_MEDIA_IMAGES READ_MEDIA_VIDEO ACCESS_MEDIA_LOCATION POST_NOTIFICATIONS; do adb shell pm grant $PKG android.permission.$p; done
+# (an earlier release may not ask for every one of these: it then can't be granted, which is fine)
+grant() { for p in READ_MEDIA_IMAGES READ_MEDIA_VIDEO ACCESS_MEDIA_LOCATION POST_NOTIFICATIONS; do adb shell pm grant $PKG android.permission.$p >/dev/null 2>&1; done; }
+grant
 
 # -- test files -------------------------------------------------------------------------------
 # All but Pictures/CrashTest: those arrive for the crash test, so no earlier scan has read them.
@@ -96,17 +112,17 @@ tap() {  # tap the first view whose text or description matches $1
   local xy
   for i in 1 2 3 4 5; do xy=$(python3 "$HERE/ui.py" "$1") && break; sleep 2; done
   if [ -z "${xy:-}" ]; then echo "nothing on screen matches '$1'; on screen:"; python3 "$HERE/ui.py" --dump | head -40; return 1; fi
-  adb shell input tap $xy
+  adb shell input tap "$xy"     # adb joins its arguments into one command line: "tap X Y"
 }
 field() { echo "$1" | grep -oE "(^| )$2=[0-9]+" | grep -oE '[0-9]+$'; }
 
 # -- scans of chosen folders ------------------------------------------------------------------
-# scan FOLDERS: tick only those folders (comma-separated, * for all), scan, print the RESULT line
+# scan FOLDERS [SECONDS]: tick only those folders (comma-separated, * for all), scan, print the RESULT line
 scan() {
   local n0 line
   n0=$(grep -c ' RESULT ' logcat.txt)
   adb shell "am start -n $PKG/.MainActivity --es folders '$1' --ez autoscan true" >/dev/null
-  for i in $(seq 1 180); do
+  for i in $(seq 1 "${2:-180}"); do
     line=$(grep ' RESULT ' logcat.txt | sed -n "$((n0 + 1))p")
     [ -n "$line" ] && break
     sleep 1
@@ -118,6 +134,24 @@ expect() {  # expect LINE NAME VALUE
   got=$(field "$1" "$2")
   if [ "$got" = "$3" ]; then ok "$2=$3"; else fail "$2 is ${got:-missing}, expected $3"; fi
 }
+
+# -- updating from earlier releases ------------------------------------------------------------
+if [ ${#EARLIER[@]} -gt 0 ]; then
+  echo "== updating from earlier releases"
+  for k in "${!EARLIER[@]}"; do
+    old=${EARLIER[$k]}
+    if [ "$k" -gt 0 ]; then
+      adb install -r "$old" >/dev/null 2>&1 || { echo "($(basename "$old") didn't install over the one before: skipped)"; continue; }
+      grant
+    fi
+    r=$(scan '*' 120); echo "$(basename "$old"): ${r:-no result within 2 minutes}"
+    adb shell input keyevent KEYCODE_BACK; sleep 1
+  done
+  out=$(adb install -r "$APK" 2>&1) && ok "the APK installs over $(basename "${EARLIER[-1]}")" ||
+    { echo "$out" | tail -5; echo "FAIL: the APK doesn't install over $(basename "${EARLIER[-1]}")"; exit 1; }
+  grant
+fi
+UNDER_TEST=$(wc -l < logcat.txt)     # from here on, only the APK under test runs (and its test build)
 
 adb shell am start -W -n $PKG/.MainActivity >/dev/null; sleep 3; shot 1-folders
 
@@ -324,24 +358,45 @@ adb shell settings put system accelerometer_rotation 0
 adb shell settings put system user_rotation 1; sleep 3; shot 11-landscape
 adb shell settings put system user_rotation 0; sleep 2
 
-# -- random GUI exploration -------------------------------------------------------------------
+# -- random GUI exploration, also in the dark theme with large text and on a small screen ---------
 start() { adb shell am start -W -n $PKG/.MainActivity >/dev/null; sleep "${1:-3}"; }
+looks() {  # looks NAME: the folder list's Scan button and its options button are on screen
+  if python3 "$HERE/ui.py" '^Scan' >/dev/null && python3 "$HERE/ui.py" 'What to look for' >/dev/null; then
+    ok "$1: the folder list and its Scan button are shown"
+  else
+    fail "$1: the Scan button or the options button is missing"; python3 "$HERE/ui.py" --dump | head -30
+  fi
+}
 for seed in 11 22 33 44 55; do
+  # The settings change while the folder list is open (a fresh start shows it): the app must come
+  # back from being recreated in them.
+  case $seed in
+    33) adb shell am force-stop $PKG; start 3
+        adb shell cmd uimode night yes >/dev/null; adb shell settings put system font_scale 1.3
+        sleep 4; shot 14-dark-large-text; looks "dark theme, text at 130 %" ;;
+    44) adb shell am force-stop $PKG; adb shell cmd uimode night no >/dev/null; adb shell settings put system font_scale 1.0
+        start 3; adb shell wm size 720x1280; adb shell wm density 240
+        sleep 4; shot 15-small-screen; looks "a 720 x 1280 screen at 240 dpi" ;;
+    55) adb shell wm size reset; adb shell wm density reset; start 3 ;;
+  esac
   adb shell monkey -p $PKG -s $seed --throttle 40 --pct-syskeys 2 --pct-rotation 3 -v 3000 > monkey-$seed.txt 2>&1
   grep -h "Events injected" monkey-$seed.txt || true
   start 2
 done
 adb shell am force-stop $PKG
 sleep 2; kill $LOGPID 2>/dev/null
-crash=$(grep -A3 "FATAL EXCEPTION" logcat.txt | grep -c "Process: $PKG")
-anr=$(grep -c "ANR in $PKG" logcat.txt)
+before=$(head -n "$UNDER_TEST" logcat.txt | grep -A3 "FATAL EXCEPTION" | grep -c "Process: $PKG")
+[ "$before" -gt 0 ] && echo "(an earlier release crashed $before time(s) while it ran: not this build's)"
+tail -n +"$((UNDER_TEST + 1))" logcat.txt > logcat-under-test.txt
+crash=$(grep -A3 "FATAL EXCEPTION" logcat-under-test.txt | grep -c "Process: $PKG")
+anr=$(grep -c "ANR in $PKG" logcat-under-test.txt)
 mon=$(grep -l "CRASH: $PKG\|NOT RESPONDING: $PKG" monkey-*.txt | wc -l)
 echo "crashes=$crash anrs=$anr monkey-reports=$mon checks-failed=$FAILS"
 if [ "$crash" -gt 0 ] || [ "$anr" -gt 0 ] || [ "$mon" -gt 0 ]; then
-  grep -B2 -A40 "FATAL EXCEPTION" logcat.txt | grep -A40 "Process: $PKG" | head -120
+  grep -B2 -A40 "FATAL EXCEPTION" logcat-under-test.txt | grep -A40 "Process: $PKG" | head -120
   grep -h -A30 "CRASH: $PKG" monkey-*.txt | head -80
   if [ "$anr" -gt 0 ] || grep -q "NOT RESPONDING: $PKG" monkey-*.txt; then
-    echo "---- ANR reports (logcat) ----"; grep -A25 "ANR in $PKG" logcat.txt | head -120
+    echo "---- ANR reports (logcat) ----"; grep -A25 "ANR in $PKG" logcat-under-test.txt | head -120
     echo "---- monkey ----"; grep -h -B3 -A25 "NOT RESPONDING: $PKG" monkey-*.txt | head -120
   fi
   exit 1
